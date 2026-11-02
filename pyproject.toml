@@ -7,7 +7,10 @@ authors = [
     { name = "Jenna Jeffway", email = "s53jjeff@uni-bonn.de" }
 ]
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "chembl-webresource-client>=0.10.9",
+    "pandas>=3.1.0",
+]
 
 [build-system]
 requires = ["uv_build>=0.12.23,<0.13.0"]
