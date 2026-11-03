@@ -19,8 +19,8 @@ Repository for EthnoHack 2026 Data Hackathon on Ethnopharmacology &amp; Health s
 ## Potential Targets
 - COX-2 + 5-LOX (inflammation)
 - COX-2 + AChE (neuroinflammation)
-- P-glycoprotein + Beta-tubulin (cancer)
-- DNA gyrase + NorA efflux pump (antibacterial)
+
+COX-2 chEMBL: https://www.ebi.ac.uk/chembl/explore/target/CHEMBL230
 
 
 ## Christian's Hints
