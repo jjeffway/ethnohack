@@ -3,15 +3,17 @@ Repository for EthnoHack 2026 Data Hackathon on Ethnopharmacology &amp; Health s
 
 ## Gameplan
 1. Choose dataset (active/inactive compounds) for two complementary targets (A and B) that participate in synergistic pathways
-2. Train tree-ensemble model (Random Forest or XGBoost) on each dataset (including hyperparameter optimization, scaffold split, Optuna?)
-3. Evaluate each model separately (ROC-AUC, balanced accuracy, PR-AUC with active-prevalence baseline?, MCC?, y-scrambling control?)
-4. Run TreeSHAP explainer to identify important chemical features for activity
-5. Score COCONUT/NPASS compounds with the model directly, identify important features and cross-check explanations (max Tanimoto applicability domain?)
-6. Validate by checking a relevant plant with a known synergistic pair matching the targets, also check negative control plants
-7. Run through ADMET filters
-8. Identify plants that have two synergistic compounds (pA(c1) × pB(c2) for c1 ≠ c2 in the same plant)
-9. Flag compounds that score high on both models as dual-target, and report them separately from pairs
-10. Output a complementary-mechanism hypothesis, identify novel synergistic pairs of natural compounds found in the same plant
+2. Retrieve dataset, filter out unsuitable value
+3. Train tree-ensemble model (Random Forest or XGBoost) on each dataset (including hyperparameter optimization, scaffold split, Optuna?)
+4. Evaluate each model separately (ROC-AUC, balanced accuracy, PR-AUC with active-prevalence baseline?, MCC?, y-scrambling control?)
+5. Run TreeSHAP explainer to identify important chemical features for activity
+6. Score COCONUT/NPASS compounds with the model directly, identify important features and cross-check explanations (max Tanimoto applicability domain?)
+7. Validate by checking a relevant plant with a known synergistic pair matching the targets, also check negative control plants
+8. Run through ADMET filters, Lipinski Rule of Five
+9. Identify plants that have two synergistic compounds (pA(c1) × pB(c2) for c1 ≠ c2 in the same plant)
+10. Flag compounds that score high on both models as dual-target, and report them separately from pairs
+11. If lacking viable results, also check inter-plant compound pairs
+12. Output a complementary-mechanism hypothesis, identify novel synergistic pairs of natural compounds found in the same plant
 
 
 ## Potential Targets
@@ -20,7 +22,21 @@ Repository for EthnoHack 2026 Data Hackathon on Ethnopharmacology &amp; Health s
 - P-glycoprotein + Beta-tubulin (cancer)
 - DNA gyrase + NorA efflux pump (antibacterial)
 
+
+## Christian's Hints
+- Find plants that have natural compounds that can be used as a drug, or known drugs that have other applications
+- chebi -> chemicals of biolohical interest
+- opentargets -> in clinical trial or approved by FDA
+- taxtree -> NCBI taxonomy tree
+- icd11 -> categorize diseases
+- ipni -> classify plants (more specialized than NCBI)
+- wcvp -> location of plants
+- wfo -> for uncommon nicknames of plants
+- obo -> open biomedical ontologies
+
+
 ***
+
 
 # Editing this README
 
