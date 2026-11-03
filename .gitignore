@@ -223,3 +223,4 @@ __marimo__/
 .streamlit/secrets.toml
 
 .information
+/chembl_raw/cox2db.csv
