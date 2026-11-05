@@ -22,6 +22,8 @@ Repository for EthnoHack 2026 Data Hackathon on Ethnopharmacology &amp; Health s
 
 COX-2 chEMBL: https://www.ebi.ac.uk/chembl/explore/target/CHEMBL230
 
+UPDATE PYPROJECT.TOML
+
 
 ## Christian's Hints
 - Find plants that have natural compounds that can be used as a drug, or known drugs that have other applications

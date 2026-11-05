@@ -4,16 +4,21 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 authors = [
-    { name = "Jenna Jeffway", email = "s53jjeff@uni-bonn.de" }
+    { name = "Jenna Jeffway", email = "s53jjeff@uni-bonn.de" },
+    { name = "Daria Kochenko", email = "NAME@uni-bonn.de" },
+    { name = "Chiara Dassow", email = "NAME@uni-bonn.de" },
 ]
 requires-python = ">=3.13"
 dependencies = [
     "chembl-webresource-client>=0.10.9",
     "matplotlib>=3.11.2",
+    "numpy>=2.5.4",
     "optuna>=5.0.0",
     "pandas>=3.1.0",
+    "rdkit>=2026.9.1",
     "requests>=2.34.2",
     "scikit-learn>=1.9.1",
+    "shap>=0.54.1",
     "xgboost>=3.4.1",
 ]
 
