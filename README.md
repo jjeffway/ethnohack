@@ -20,7 +20,12 @@ Repository for EthnoHack 2026 Data Hackathon on Ethnopharmacology &amp; Health s
 - COX-2 + 5-LOX (inflammation)
 - COX-2 + AChE (neuroinflammation)
 
+Check which pathways they are present in -> KEGG
+Structural similarity and biological functions
+
 COX-2 chEMBL: https://www.ebi.ac.uk/chembl/explore/target/CHEMBL230
+
+https://pubmed.ncbi.nlm.nih.gov/40346930/ 
 
 UPDATE PYPROJECT.TOML
 
