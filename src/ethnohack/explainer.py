@@ -2,14 +2,26 @@
 import IPython.display
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import shap
-from ethnohack.constants import MORGAN_RADIUS, FP_SIZE
+from ethnohack.constants import MORGAN_RADIUS, FP_SIZE, RANDOM_STATE
 from rdkit import Chem, DataStructs, RDLogger
 from rdkit.Chem import Draw, rdFingerprintGenerator
 from rdkit.Chem.Draw import rdMolDraw2D
 
 # silence RDKit C++ warnings
 RDLogger.DisableLog("rdApp.warning")
+
+# cache explainers (building one for a large forest takes a while)
+_explainer_cache = {}
+
+
+# build a TreeExplainer once per model and reuse it
+def _get_explainer(model):
+    # keep a reference to the model so its id cannot be reused by another object
+    if id(model) not in _explainer_cache:
+        _explainer_cache[id(model)] = (model, shap.TreeExplainer(model))
+    return _explainer_cache[id(model)][1]
 
 
 # convert SMILES input -> RDKit molecule (None for non-string or invalid input)
@@ -103,8 +115,13 @@ def _standardize_shap_values(shap_values, model):
         if n_classes == 0:
             n_classes = shap_array.shape[-1]
 
+        # class axis already last -> keep (checked first so a batch of n_classes
+        # molecules, e.g. 2 samples for a binary model, is not transposed by mistake)
+        if shap_array.shape[-1] == n_classes:
+            return shap_array
+
         # move class axis to last position when it is currently first
-        if shap_array.shape[0] == n_classes and shap_array.shape[1] != n_classes:
+        if shap_array.shape[0] == n_classes:
             return np.transpose(shap_array, (1, 2, 0))
 
         return shap_array
@@ -140,10 +157,27 @@ def _get_expected_value(explainer, class_idx, model=None):
     return float(expected_array[class_idx])
 
 
+# select one class from standardized SHAP output -> (n_samples, n_features)
+def _select_class_shap(shap_values, model, class_idx):
+    # slice class column (class shapley values)
+    if shap_values.ndim == 3:
+        return shap_values[:, :, class_idx]
+
+    # fallback for binary/single-output SHAP arrays
+    shap_class = np.asarray(shap_values)
+
+    # single-output binary models explain the positive class only
+    # flip the sign when the negative class (position 0) is requested
+    if len(getattr(model, "classes_", [])) == 2 and class_idx == 0:
+        shap_class = -shap_class
+
+    return shap_class
+
+
 # get expected value for a target class without manually inspecting explainer
 def get_class_expected_value(model, target_class):
-    # create temporary explainer to read expected value
-    explainer = shap.TreeExplainer(model)
+    # reuse cached explainer to read expected value
+    explainer = _get_explainer(model)
 
     # resolve target class label to integer position
     class_idx = _resolve_class_index(model, target_class)
@@ -165,8 +199,8 @@ def get_shap_bits(smiles, model, target_class, chembl_id=None):
     # pass ID directly because dataset/model are defined outside this module
     id_explain = str(chembl_id) if chembl_id is not None else None
 
-    # set up the explainer using shap TreeExplainer for the model
-    explainer = shap.TreeExplainer(model)
+    # set up the explainer using shap TreeExplainer for the model (cached)
+    explainer = _get_explainer(model)
 
     # get the shapley values for each bit in molecule fingerprint
     # reshape to (1, n_features) for SHAP prediction
@@ -180,17 +214,8 @@ def get_shap_bits(smiles, model, target_class, chembl_id=None):
     # resolve target class label to integer position
     class_idx = _resolve_class_index(model, target_class)
 
-    # slice class column (class shapley values)
-    if shap_values.ndim == 3:
-        shap_class = shap_values[0, :, class_idx]
-    else:
-        # fallback for binary/single-output SHAP arrays
-        shap_class = np.asarray(shap_values)[0, :]
-
-        # single-output binary models explain the positive class only
-        # flip the sign when the negative class (position 0) is requested
-        if len(getattr(model, "classes_", [])) == 2 and class_idx == 0:
-            shap_class = -shap_class
+    # slice class column (class shapley values) for the single molecule
+    shap_class = _select_class_shap(shap_values, model, class_idx)[0]
 
     # map bit index to shapley value
     values_shap = {bit_id: shap_val for bit_id, shap_val in enumerate(shap_class)}
@@ -486,3 +511,120 @@ def highlight_bit(
     # draw the requested Morgan bit on the molecule
     img = Draw.DrawMorganBit(mol, bit_id, bit_info)
     IPython.display.display(img)
+
+
+# pick test molecules that show what the model gets right and wrong
+def select_examples(result):
+    # reset index so positions match the probability/label arrays
+    test_df = result["test_df"].reset_index(drop=True)
+    proba = np.asarray(result["proba"])
+    y_te = np.asarray(result["y_te"])
+    active = np.where(y_te == 1)[0]
+    inactive = np.where(y_te == 0)[0]
+
+    # most confident hits and most confident mistakes
+    picks = {
+        "True active (most confident)": active[np.argmax(proba[active])],
+        "True inactive (most confident)": inactive[np.argmin(proba[inactive])],
+        "False positive (inactive predicted active)": inactive[
+            np.argmax(proba[inactive])
+        ],
+        "False negative (active predicted inactive)": active[np.argmin(proba[active])],
+    }
+
+    # return name -> (smiles, predicted probability, true label)
+    return {
+        name: (test_df["smiles"].iloc[i], float(proba[i]), int(y_te[i]))
+        for name, i in picks.items()
+    }
+
+
+# explain one molecule: highlighted structure + waterfall plot
+def explain_molecule(
+    smiles, model, target_class=1, feature_names=None, n_top=2, chembl_id=None
+):
+    # get fingerprint, SHAP values and expected value for the molecule
+    result = get_shap_bits(smiles, model, target_class, chembl_id=chembl_id)
+    if result is None:
+        return
+
+    mol_explain, id_explain, explainer, shap_class, sorted_bits = result
+    class_idx = _resolve_class_index(model, target_class)
+    expected_value = get_class_expected_value(model, target_class)
+
+    # model probability for the target class vs. the average prediction (base value)
+    proba = model.predict_proba(mol_explain.reshape(1, -1))[0, class_idx]
+    print(f"SMILES: {smiles}")
+    print(f"Base value: {expected_value:.3f} | Model probability: {proba:.3f}")
+
+    # molecule with top contributing bits highlighted
+    visualize_mol_shap(smiles, model, target_class, n_top=n_top, chembl_id=chembl_id)
+
+    # waterfall plot of the strongest bits
+    waterfall_plot(shap_class, expected_value, mol_explain, feature_names)
+
+
+# calculate SHAP values for many molecules -> (shap matrix, matching feature matrix)
+def global_shap(model, X, target_class, n_max=500):
+    X = np.asarray(X)
+
+    # subsample for speed, TreeSHAP cost grows with the number of molecules
+    if len(X) > n_max:
+        rng = np.random.default_rng(RANDOM_STATE)
+        X = X[rng.choice(len(X), size=n_max, replace=False)]
+
+    explainer = _get_explainer(model)
+    shap_values = explainer.shap_values(X, check_additivity=False)
+
+    # standardize SHAP output and select the target class
+    shap_values = _standardize_shap_values(shap_values, model)
+    class_idx = _resolve_class_index(model, target_class)
+    shap_matrix = _select_class_shap(shap_values, model, class_idx)
+
+    return shap_matrix, X
+
+
+# beeswarm summary plot of the most important bits
+def plot_global_shap(shap_matrix, X, feature_names=None, max_display=20):
+    shap.summary_plot(
+        shap_matrix,
+        X,
+        feature_names=feature_names,
+        max_display=max_display,
+        show=False,
+    )
+    plt.title("Global SHAP Summary")
+    plt.tight_layout()
+    plt.show()
+
+
+# table of the most important bits across molecules
+def top_bits_table(shap_matrix, X, feature_names=None, n_top=15):
+    X = np.asarray(X)
+    n_features = shap_matrix.shape[1]
+    if feature_names is None:
+        feature_names = [f"bit{i}" for i in range(n_features)]
+
+    # mean absolute SHAP = overall importance of the bit
+    mean_abs = np.abs(shap_matrix).mean(axis=0)
+
+    # share of molecules containing the bit
+    present = X > 0
+    share = present.mean(axis=0)
+
+    # mean SHAP among molecules that contain the bit = direction of its effect
+    n_present = np.maximum(present.sum(axis=0), 1)
+    mean_present = (shap_matrix * present).sum(axis=0) / n_present
+
+    order = np.argsort(mean_abs)[::-1][:n_top]
+    table = pd.DataFrame(
+        {
+            "bit": order,
+            "feature": [feature_names[i] for i in order],
+            "mean_abs_shap": mean_abs[order],
+            "mean_shap_when_present": mean_present[order],
+            "pushes_toward": np.where(mean_present[order] > 0, "active", "inactive"),
+            "share_of_molecules": share[order],
+        }
+    )
+    return table.reset_index(drop=True)

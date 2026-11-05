@@ -1,5 +1,5 @@
 """
-model.py
+cox_model_api.py
 COX activity classifier (Random Forest on ECFP4, 2048 bits).
 
 Needs: rdkit, scikit-learn, joblib, numpy, pandas, optuna, matplotlib, scipy
@@ -331,6 +331,10 @@ def plot_roc(results):
 
 def save_model(result):
     """Saves the model and its training SMILES (needed for the reliability flag)."""
+    # reset caches so load_model/predict pick up the new files, not an older model
+    global _model, _train_fps
+    _model = None
+    _train_fps = None
     COX2_MODEL_FILE.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(result["model"], COX2_MODEL_FILE)
     result["train_df"][["smiles"]].to_csv(COX2_TRAIN_FILE, index=False)
