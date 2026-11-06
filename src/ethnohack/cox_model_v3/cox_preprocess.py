@@ -64,6 +64,43 @@ def load_raw(path=COX2_CSV):
     return pd.read_csv(path)
 
 
+def remove_stereo_conflicts(data, label_col="label", smiles_col="smiles"):
+    """
+    Morgan fingerprints ignore chirality by default, so stereoisomers of the
+    same 2D structure get IDENTICAL feature vectors. Where they carry
+    different labels the model cannot resolve them, and they can leak across
+    a scaffold split unnoticed. Here we drop those groups and keep one row
+    per 2D structure.
+
+    Note this discards real chemistry: COX inhibition by profens is
+    stereoselective (the S-enantiomer is the active one). The model simply
+    cannot represent it, so the rows are noise rather than signal.
+    """
+    data = data.copy()
+    data["flat"] = data[smiles_col].apply(
+        lambda s: (
+            lambda m: (
+                None
+                if m is None
+                else (Chem.RemoveStereochemistry(m), Chem.MolToSmiles(m))[1]
+            )
+        )(Chem.MolFromSmiles(str(s)))
+    )
+    data = data.dropna(subset=["flat"])
+
+    conflict = data.groupby("flat")[label_col].nunique()
+    bad = set(conflict[conflict > 1].index)
+    n_rows = data["flat"].isin(bad).sum()
+
+    data = data[~data["flat"].isin(bad)]
+    n_dupes = data["flat"].duplicated().sum()
+    data = data.drop_duplicates(subset="flat").reset_index(drop=True)
+
+    print(f"Stereo conflicts: {len(bad)} structures ({n_rows} rows) removed")
+    print(f"Stereo duplicates: {n_dupes} rows removed")
+    return data
+
+
 def clean_data(df, smiles_col="Smiles", label_col="Activity", keep_cols=None):
     """
     Returns a DataFrame with smiles, label, plus any columns in keep_cols
@@ -84,6 +121,7 @@ def clean_data(df, smiles_col="Smiles", label_col="Activity", keep_cols=None):
     conflict = data.groupby("smiles")["label"].nunique()
     data = data[~data["smiles"].isin(conflict[conflict > 1].index)]
     data = data.drop_duplicates(subset="smiles").reset_index(drop=True)
+    data = remove_stereo_conflicts(data)
 
     print(
         f"Compounds: {len(data)} | actives: {data['label'].sum()} "
@@ -102,7 +140,9 @@ def scaffold_of(smi):
 def add_scaffolds(data):
     """Adds the scaffold column used to group molecules for the honest split."""
     data = data.copy()
-    data["scaffold"] = data["smiles"].apply(scaffold_of)
+
+    source = "flat" if "flat" in data.columns else "smiles"
+    data["scaffold"] = data[source].apply(scaffold_of)
     print(f"Unique scaffolds: {data['scaffold'].nunique()}")
     return data
 
