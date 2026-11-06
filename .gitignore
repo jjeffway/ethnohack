@@ -224,3 +224,6 @@ __marimo__/
 
 .information
 /chembl_raw/cox2db.csv
+
+
+/datasets/coconut.csv

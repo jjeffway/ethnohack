@@ -22,4 +22,7 @@ N_SPLITS = 5
 RANDOM_STATE = 42
 # "ecfp" = 2048-bit ECFP4, "ecfp_counts" = substructure counts, "ecfp_desc" = ECFP4 + 10 properties
 FEATURE_MODE = "ecfp"
-COX2_PREPARED_CSV = BASE_DIR / "datasets" / "cox2_prepared.csv"
+
+
+COCONUT_CSV = BASE_DIR / "datasets" / "coconut.csv"
+COCONUT_SCORED_CSV = BASE_DIR / "datasets" / "coconut_scored.csv"

@@ -13,7 +13,8 @@ Repository for EthnoHack 2026 Data Hackathon on Ethnopharmacology &amp; Health s
 9. Identify plants that have two synergistic compounds (pA(c1) × pB(c2) for c1 ≠ c2 in the same plant)
 10. Flag compounds that score high on both models as dual-target, and report them separately from pairs
 11. If lacking viable results, also check inter-plant compound pairs
-12. Output a complementary-mechanism hypothesis, identify novel synergistic pairs of natural compounds found in the same plant
+12. Validate by checking biological pathway and other features
+13. Output a complementary-mechanism hypothesis, identify novel synergistic pairs of natural compounds found in the same plant
 
 
 ## Potential Targets

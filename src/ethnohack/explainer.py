@@ -32,6 +32,90 @@ def _mol_from_smiles(smiles):
     return Chem.MolFromSmiles(smiles)
 
 
+# get the model input vector for one molecule
+def _features_for(smiles, featurizer=None):
+    # default: 2048-bit ECFP4 only (models trained on fingerprint bits alone)
+    if featurizer is None:
+        return smiles_to_ecfp4(smiles)
+
+    # model-specific featurizer (e.g. cox_model_api.featurize) -> fingerprint bits
+    # plus any extra descriptor columns, in the column order used for training
+    if _mol_from_smiles(smiles) is None:
+        return None
+    return np.asarray(featurizer([smiles]))[0]
+
+
+# check that the model's feature layout matches what this module assumes
+# (bit highlighting maps feature index -> Morgan bit id, so this must hold)
+def check_feature_layout(feature_names, model=None, bundle=None):
+    names = list(feature_names)
+
+    # feature count must match what the model expects
+    if model is not None and len(names) != model.n_features_in_:
+        raise ValueError(
+            f"{len(names)} feature names but model expects {model.n_features_in_} features"
+        )
+
+    # first FP_SIZE features must be the fingerprint bits, in bit order
+    if names[:FP_SIZE] != [f"fp_{i}" for i in range(FP_SIZE)]:
+        raise ValueError(
+            f"First {FP_SIZE} features are not fp_0 ... fp_{FP_SIZE - 1}, bit drawing would be wrong"
+        )
+
+    # fingerprint settings saved with the model must equal the ones used for drawing
+    if bundle is not None and (
+        bundle["fp_size"] != FP_SIZE or bundle["radius"] != MORGAN_RADIUS
+    ):
+        raise ValueError(
+            f"Model was trained with fp_size={bundle['fp_size']}, radius={bundle['radius']} "
+            f"but constants say {FP_SIZE}, {MORGAN_RADIUS}"
+        )
+
+    print(f"{FP_SIZE} fingerprint bits + {len(names) - FP_SIZE} extra features")
+
+
+# add substructure hints to the fp_* feature names (single pass over the molecules)
+def readable_feature_names(feature_names, smiles_list):
+    names = list(feature_names)
+
+    # map Morgan bit id -> position in the feature list
+    positions = {
+        int(n[3:]): i
+        for i, n in enumerate(names)
+        if n.startswith("fp_") and n[3:].isdigit()
+    }
+
+    seen = set()
+    for smiles in smiles_list:
+        mol = _mol_from_smiles(smiles)
+        if mol is None:
+            continue
+
+        for bit_id, envs in get_bit_info(mol).items():
+            if bit_id in seen or bit_id not in positions:
+                continue
+
+            # name the bit after one substructure that switches it on
+            atom, radius = envs[0]
+            env = (
+                Chem.FindAtomEnvironmentOfRadiusN(mol, radius, atom) if radius else None
+            )
+            frag = (
+                Chem.MolFragmentToSmiles(mol, atomsToUse=[atom])
+                if env is None
+                else Chem.MolToSmiles(Chem.PathToSubmol(mol, env))
+            )
+            if frag:
+                names[positions[bit_id]] = f"{names[positions[bit_id]]} {frag}"
+            seen.add(bit_id)
+
+        # stop early once every bit has a hint
+        if len(seen) == len(positions):
+            break
+
+    return names
+
+
 # function to convert SMILES str -> fingerprint array
 def smiles_to_ecfp4(smiles):
     # accept only string-like SMILES input
@@ -186,9 +270,9 @@ def get_class_expected_value(model, target_class):
 
 
 # calculate SHAP values -> return sorted bits (and other relevant variables)
-def get_shap_bits(smiles, model, target_class, chembl_id=None):
-    # get fingerprint for molecule
-    mol_explain = smiles_to_ecfp4(smiles)
+def get_shap_bits(smiles, model, target_class, chembl_id=None, featurizer=None):
+    # get model input features for molecule (fingerprint, plus extras if featurizer given)
+    mol_explain = _features_for(smiles, featurizer)
 
     # stop cleanly when SMILES cannot be parsed
     if mol_explain is None:
@@ -233,6 +317,7 @@ def visualize_mol_shap(
     target_class,
     n_top=2,
     chembl_id=None,
+    featurizer=None,
 ):
     # convert to RDKit mol -> generate bitInfo Map
     # helper handles NaN/non-string input without raising
@@ -251,6 +336,7 @@ def visualize_mol_shap(
         model,
         target_class,
         chembl_id=chembl_id,
+        featurizer=featurizer,
     )
 
     # stop cleanly when fingerprint or SHAP calculation fails
@@ -266,21 +352,13 @@ def visualize_mol_shap(
     # filter strictly for present bits (bit_id in bit_info)
     present = [b for b in sorted_bits if b[0] in bit_info]
 
-    # select top N positive and top N negative bits
-    positive_bits = [(b, v) for b, v in present if v > 0][:n_top]
-    negative_bits = [(b, v) for b, v in present if v < 0][:n_top]
-    selected = positive_bits + negative_bits
+    # select the top N present bits by absolute SHAP value, whether active or inactive
+    # (sorted_bits is already ordered by absolute SHAP value, strongest first)
+    selected = present[:n_top]
 
-    # sort selected bits by absolute SHAP value for stable display order
-    selected = sorted(selected, key=lambda x: abs(x[1]), reverse=True)
-
-    # if no signed bits are available, fall back to strongest present bits
-    # (these have SHAP value 0, so they are drawn in neutral gray below)
+    # bits with SHAP value 0 are drawn in neutral gray below
     if not selected:
-        selected = present[:n_top]
-
-    if not selected:
-        print("No active present bits found to highlight.")
+        print("No present bits found to highlight.")
         return
 
     # prepare dictionaries for single-plot overlay
@@ -476,7 +554,7 @@ def highlight_bit(
         return
 
     # find indices of molecules containing the target bit
-    present_indices = np.where(X_matrix[:, bit_id] == 1)[0]
+    present_indices = np.where(X_matrix[:, bit_id] > 0)[0]
 
     if len(present_indices) == 0:
         print(f"Bit {bit_id} is not present in any provided molecule.")
@@ -514,23 +592,30 @@ def highlight_bit(
 
 
 # pick test molecules that show what the model gets right and wrong
-def select_examples(result):
+# mask: optional boolean array over the test rows (e.g. in-domain molecules only)
+def select_examples(result, mask=None):
     # reset index so positions match the probability/label arrays
     test_df = result["test_df"].reset_index(drop=True)
     proba = np.asarray(result["proba"])
     y_te = np.asarray(result["y_te"])
-    active = np.where(y_te == 1)[0]
-    inactive = np.where(y_te == 0)[0]
 
-    # most confident hits and most confident mistakes
-    picks = {
-        "True active (most confident)": active[np.argmax(proba[active])],
-        "True inactive (most confident)": inactive[np.argmin(proba[inactive])],
-        "False positive (inactive predicted active)": inactive[
+    # restrict to the allowed rows
+    allowed = np.ones(len(y_te), dtype=bool) if mask is None else np.asarray(mask)
+    active = np.where((y_te == 1) & allowed)[0]
+    inactive = np.where((y_te == 0) & allowed)[0]
+
+    # most confident hits and most confident mistakes (skip empty groups)
+    picks = {}
+    if len(active) > 0:
+        picks["True active (most confident)"] = active[np.argmax(proba[active])]
+        picks["False negative (active predicted inactive)"] = active[
+            np.argmin(proba[active])
+        ]
+    if len(inactive) > 0:
+        picks["True inactive (most confident)"] = inactive[np.argmin(proba[inactive])]
+        picks["False positive (inactive predicted active)"] = inactive[
             np.argmax(proba[inactive])
-        ],
-        "False negative (active predicted inactive)": active[np.argmin(proba[active])],
-    }
+        ]
 
     # return name -> (smiles, predicted probability, true label)
     return {
@@ -541,10 +626,18 @@ def select_examples(result):
 
 # explain one molecule: highlighted structure + waterfall plot
 def explain_molecule(
-    smiles, model, target_class=1, feature_names=None, n_top=2, chembl_id=None
+    smiles,
+    model,
+    target_class=1,
+    feature_names=None,
+    n_top=2,
+    chembl_id=None,
+    featurizer=None,
 ):
-    # get fingerprint, SHAP values and expected value for the molecule
-    result = get_shap_bits(smiles, model, target_class, chembl_id=chembl_id)
+    # get features, SHAP values and expected value for the molecule
+    result = get_shap_bits(
+        smiles, model, target_class, chembl_id=chembl_id, featurizer=featurizer
+    )
     if result is None:
         return
 
@@ -558,7 +651,14 @@ def explain_molecule(
     print(f"Base value: {expected_value:.3f} | Model probability: {proba:.3f}")
 
     # molecule with top contributing bits highlighted
-    visualize_mol_shap(smiles, model, target_class, n_top=n_top, chembl_id=chembl_id)
+    visualize_mol_shap(
+        smiles,
+        model,
+        target_class,
+        n_top=n_top,
+        chembl_id=chembl_id,
+        featurizer=featurizer,
+    )
 
     # waterfall plot of the strongest bits
     waterfall_plot(shap_class, expected_value, mol_explain, feature_names)
@@ -567,6 +667,8 @@ def explain_molecule(
 # calculate SHAP values for many molecules -> (shap matrix, matching feature matrix)
 def global_shap(model, X, target_class, n_max=500):
     X = np.asarray(X)
+    if len(X) == 0:
+        raise ValueError("No molecules to explain")
 
     # subsample for speed, TreeSHAP cost grows with the number of molecules
     if len(X) > n_max:
@@ -599,7 +701,7 @@ def plot_global_shap(shap_matrix, X, feature_names=None, max_display=20):
 
 
 # table of the most important bits across molecules
-def top_bits_table(shap_matrix, X, feature_names=None, n_top=15):
+def top_bits_table(shap_matrix, X, feature_names=None, n_top=15, fp_only=False):
     X = np.asarray(X)
     n_features = shap_matrix.shape[1]
     if feature_names is None:
@@ -616,10 +718,15 @@ def top_bits_table(shap_matrix, X, feature_names=None, n_top=15):
     n_present = np.maximum(present.sum(axis=0), 1)
     mean_present = (shap_matrix * present).sum(axis=0) / n_present
 
-    order = np.argsort(mean_abs)[::-1][:n_top]
+    # optionally rank fingerprint bits only (first FP_SIZE features), e.g. for drawing
+    ranking = np.argsort(mean_abs)[::-1]
+    if fp_only:
+        ranking = ranking[ranking < FP_SIZE]
+    order = ranking[:n_top]
     table = pd.DataFrame(
         {
-            "bit": order,
+            "feature_index": order,
+            "kind": np.where(order < FP_SIZE, "fingerprint bit", "extra feature"),
             "feature": [feature_names[i] for i in order],
             "mean_abs_shap": mean_abs[order],
             "mean_shap_when_present": mean_present[order],
