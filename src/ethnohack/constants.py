@@ -9,6 +9,7 @@ FP_SIZE = 2048
 
 # cox2
 COX2_CSV = BASE_DIR / "datasets" / "cox2_cleaned.csv"
+COX2_PREPARED_CSV = BASE_DIR / "datasets" / "cox2_prepared.csv"
 COX2_MODEL_FILE = BASE_DIR / "src" / "ethnohack" / "cox_model" / "cox_model.joblib"
 COX2_TRAIN_FILE = BASE_DIR / "src" / "ethnohack" / "cox_model" / "train_smiles_cox.csv"
 
@@ -21,3 +22,4 @@ N_SPLITS = 5
 RANDOM_STATE = 42
 # "ecfp" = 2048-bit ECFP4, "ecfp_counts" = substructure counts, "ecfp_desc" = ECFP4 + 10 properties
 FEATURE_MODE = "ecfp"
+COX2_PREPARED_CSV = BASE_DIR / "datasets" / "cox2_prepared.csv"

@@ -1,20 +1,22 @@
 """
 cox_train.py
-Trains the COX-2 classifier: clean -> split -> tune -> fit -> evaluate -> save.
+Step 2 of 2: prepared table -> split -> tune -> evaluate -> save model.
 
-Needs everything cox_model_api needs, plus: optuna, matplotlib, scipy
+Does NOT compute features. Run cox_preprocess.py first.
 
-Usage (from a notebook):
+Needs: scikit-learn, optuna, matplotlib, scipy, rdkit (for the similarity checks)
+
+Usage (notebook):
     import ethnohack.cox_model.cox_train as train
 
-    data    = train.add_scaffolds(train.clean_data(train.load_dataset()))
-    results = train.run_models(data, "both")      # random + scaffold, for the slide
+    data    = train.load_prepared()
+    results = train.run_models(data, "both")   # random + scaffold, for the slide
     train.plot_roc(results)
 
-    best = results[-1]                            # scaffold = the honest one
-    sim  = train.similarity_baseline(best)        # is the model better than similarity?
+    best = results[-1]                         # scaffold = the honest one
+    sim  = train.similarity_baseline(best)     # is it better than similarity search?
     train.combined_baseline(best, sim)
-    train.reliability_bins(best)                  # where the model actually works
+    train.reliability_bins(best)               # WHERE does it work?
     train.save_model(best, tune_cutoff=True)
 """
 
@@ -24,9 +26,9 @@ import numpy as np
 import optuna
 import pandas as pd
 from ethnohack.constants import (
-    COX2_CSV,
     COX2_CUTOFF,
     COX2_MODEL_FILE,
+    COX2_PREPARED_CSV,
     COX2_TRAIN_FILE,
     FEATURE_MODE,
     FP_SIZE,
@@ -35,7 +37,7 @@ from ethnohack.constants import (
     RANDOM_STATE,
 )
 from rdkit import Chem
-from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import rdFingerprintGenerator
 from rdkit.DataStructs import BulkTanimotoSimilarity
 from scipy.stats import rankdata
 from sklearn.ensemble import RandomForestClassifier
@@ -55,68 +57,36 @@ from sklearn.model_selection import (
     cross_val_score,
 )
 
-# one shared definition of featurize / fingerprint — never duplicate it
-from . import cox_model_api as api
+from .cox_preprocess import feature_columns
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
+_fp_gen = rdFingerprintGenerator.GetMorganGenerator(
+    radius=MORGAN_RADIUS, fpSize=FP_SIZE
+)
 
-def _featurize(smiles_list, mode=FEATURE_MODE):
-    """Training-time wrapper: passes settings explicitly (no saved model yet)."""
-    return api.featurize(smiles_list, mode=mode, fp_size=FP_SIZE, radius=MORGAN_RADIUS)
+
+def load_prepared(path=COX2_PREPARED_CSV):
+    """Reads the table written by cox_preprocess.build_dataset()."""
+    data = pd.read_csv(path)
+    print(f"Loaded {len(data)} compounds | {len(feature_columns(data))} features")
+    return data
+
+
+def _matrix(df, cols):
+    X = df[cols].to_numpy(dtype=np.float32)
+    return np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
 
 def _fp(smiles):
-    return api.fingerprint(smiles, radius=MORGAN_RADIUS, fp_size=FP_SIZE)
+    mol = Chem.MolFromSmiles(str(smiles))
+    return None if mol is None else _fp_gen.GetFingerprint(mol)
 
 
 # ============================================================
-# 1) DATA
-# ============================================================
-def load_dataset():
-    return pd.read_csv(COX2_CSV)
-
-
-def clean_data(df, smiles_col="Smiles", label_col="Activity"):
-    """Returns a DataFrame with columns smiles, label. SMILES are already canonical."""
-    data = df[[smiles_col, label_col]].copy()
-    data.columns = ["smiles", "label"]
-    data["label"] = data["label"].astype(int)
-    data = data.dropna(subset=["smiles"])
-
-    ok = data["smiles"].apply(lambda s: Chem.MolFromSmiles(str(s)) is not None)
-    print("Unparsable SMILES removed:", int((~ok).sum()))
-    data = data[ok]
-
-    # same molecule labelled both 0 and 1 -> untrustworthy, drop it
-    conflict = data.groupby("smiles")["label"].nunique()
-    data = data[~data["smiles"].isin(conflict[conflict > 1].index)]
-    data = data.drop_duplicates(subset="smiles").reset_index(drop=True)
-
-    print(
-        f"Compounds: {len(data)} | actives: {data['label'].sum()} "
-        f"({data['label'].mean():.1%})"
-    )
-    return data
-
-
-def scaffold_of(smi):
-    """Murcko scaffold = the ring core, side chains stripped off."""
-    mol = Chem.MolFromSmiles(smi)
-    scaf = Chem.MolToSmiles(MurckoScaffold.GetScaffoldForMol(mol))
-    return scaf if scaf != "" else "ACYCLIC_" + smi  # ring-free: own group
-
-
-def add_scaffolds(data):
-    data = data.copy()
-    data["scaffold"] = data["smiles"].apply(scaffold_of)
-    return data
-
-
-# ============================================================
-# 2) SPLIT
+# 1) SPLIT
 # RANDOM:   close analogues land in BOTH sets -> the model recognises the
-#           series instead of the chemistry -> scores look better than reality.
+#           compound series instead of the chemistry -> flattering scores.
 # SCAFFOLD: molecules sharing a ring core stay on one side -> closer to the
 #           real task (unseen plant metabolites) -> lower but honest.
 # ============================================================
@@ -133,7 +103,7 @@ def split_data(data, split_mode):
 
 
 # ============================================================
-# 3) TUNE AND FIT
+# 2) TUNE AND FIT
 # ============================================================
 def suggest_params(trial):
     return {
@@ -143,17 +113,18 @@ def suggest_params(trial):
         "max_depth": trial.suggest_int("max_depth", 5, 40),
         # bigger leaves = smoother, less overfitting
         "min_samples_leaf": trial.suggest_int("min_samples_leaf", 1, 10),
-        # how many of the 2048 bits each split may look at
+        # how many features each split may look at
         "max_features": trial.suggest_categorical(
             "max_features", ["sqrt", "log2", 0.1, 0.2]
         ),
         "criterion": trial.suggest_categorical("criterion", ["gini", "entropy"]),
-        # "balanced" up-weights the smaller class instead of resampling the data
+        # "balanced" up-weights the smaller class instead of resampling
         "class_weight": trial.suggest_categorical("class_weight", [None, "balanced"]),
     }
 
 
 def make_rf(params):
+    # random_state fixed -> same data + same params = same forest, every time
     return RandomForestClassifier(**params, n_jobs=-1, random_state=RANDOM_STATE)
 
 
@@ -161,6 +132,10 @@ def tune(X_tr, y_tr, groups, split_mode, n_trials=30, timeout_min=15):
     """
     Hyperparameter search. The inner CV uses the SAME split logic as the outer
     split, otherwise tuning is optimistic even with a scaffold test set.
+
+    Stops at n_trials OR timeout_min, whichever comes first. The timeout is
+    checked between trials, so a running trial finishes (slight overrun).
+    For exact reproducibility set timeout_min high and let n_trials decide.
     """
     cv = _make_cv(split_mode)
     cv_groups = groups if split_mode == "scaffold" else None
@@ -187,7 +162,7 @@ def tune(X_tr, y_tr, groups, split_mode, n_trials=30, timeout_min=15):
 
 
 def evaluate(y_te, proba, cutoff=COX2_CUTOFF):
-    """Prints test metrics. Returns them as a dict for saving."""
+    """Prints test metrics, returns them for saving."""
     pred = (proba >= cutoff).astype(int)
     m = {
         "prevalence": float(y_te.mean()),
@@ -206,15 +181,16 @@ def evaluate(y_te, proba, cutoff=COX2_CUTOFF):
     return m
 
 
-def run_split(data, split_mode, n_trials=30, timeout_min=15, mode=FEATURE_MODE):
+def run_split(data, split_mode, n_trials=30, timeout_min=15):
     """One full run = split -> tune -> fit -> evaluate."""
-    print(f"\n{'=' * 55}\nSPLIT: {split_mode.upper()}   FEATURES: {mode}\n{'=' * 55}")
+    print(f"\n{'=' * 55}\nSPLIT: {split_mode.upper()}\n{'=' * 55}")
 
+    cols = feature_columns(data)
     train_df, test_df = split_data(data, split_mode)
-    X_tr, y_tr = _featurize(train_df["smiles"], mode), train_df["label"].values
-    X_te, y_te = _featurize(test_df["smiles"], mode), test_df["label"].values
+    X_tr, y_tr = _matrix(train_df, cols), train_df["label"].values
+    X_te, y_te = _matrix(test_df, cols), test_df["label"].values
 
-    print(f"train: {len(train_df)} | test: {len(test_df)} | features: {X_tr.shape[1]}")
+    print(f"train: {len(train_df)} | test: {len(test_df)} | features: {len(cols)}")
     if split_mode == "scaffold":
         overlap = len(set(train_df["scaffold"]) & set(test_df["scaffold"]))
         print(f"scaffold overlap (must be 0): {overlap}")
@@ -231,7 +207,7 @@ def run_split(data, split_mode, n_trials=30, timeout_min=15, mode=FEATURE_MODE):
     fpr, tpr, _ = roc_curve(y_te, proba)
     return {
         "split_mode": split_mode,
-        "feature_mode": mode,
+        "feature_cols": cols,
         "model": model,
         "train_df": train_df,
         "test_df": test_df,
@@ -246,24 +222,24 @@ def run_split(data, split_mode, n_trials=30, timeout_min=15, mode=FEATURE_MODE):
     }
 
 
-def run_models(data, split_mode, n_trials=30, timeout_min=15):
+def run_models(data, split_mode="both", n_trials=30, timeout_min=15):
     """
-    Runs one or both split modes. The last result is the one to use.
-    Running "both" gives the presentation slide: the gap between the curves
-    IS the leakage a random split hides. Report the scaffold number.
+    Runs one or both split modes. The LAST result is the one to use.
+    The gap between the two ROC curves IS the leakage a random split hides.
+    Note: the limits apply per mode, so "both" takes up to twice as long.
     """
     modes = ["random", "scaffold"] if split_mode == "both" else [split_mode]
     return [run_split(data, m, n_trials, timeout_min) for m in modes]
 
 
 # ============================================================
-# 4) SANITY CHECKS
+# 3) SANITY CHECKS
 # ============================================================
 def similarity_baseline(result):
     """
-    Nearest-active-neighbour search: score each test compound by its similarity
-    to the closest known active. If the model barely beats this, it mostly
-    learned "looks like a known active" — worth knowing and worth reporting.
+    Nearest-active-neighbour search: score each test compound by how similar
+    it is to the closest known active. If the model barely beats this, it
+    mostly learned "looks like a known active". Worth knowing and reporting.
     """
     fps_tr = [_fp(s) for s in result["train_df"]["smiles"]]
     fps_te = [_fp(s) for s in result["test_df"]["smiles"]]
@@ -271,10 +247,7 @@ def similarity_baseline(result):
 
     actives = [fp for fp, y in zip(fps_tr, y_tr) if y == 1 and fp is not None]
     sim = np.array(
-        [
-            max(BulkTanimotoSimilarity(fp, actives)) if fp is not None else 0.0
-            for fp in fps_te
-        ]
+        [max(BulkTanimotoSimilarity(fp, actives)) if fp else 0.0 for fp in fps_te]
     )
 
     print(
@@ -294,8 +267,8 @@ def similarity_baseline(result):
 
 def combined_baseline(result, sim):
     """
-    Rank average of model and similarity. Note: picking this AFTER seeing the
-    test scores is selection on the test set — treat any gain as an
+    Rank average of model and similarity. Caution: choosing this AFTER seeing
+    the test scores is selection on the test set. Treat any gain as an
     observation, not a validated result.
     """
     y_te = result["y_te"]
@@ -311,19 +284,19 @@ def combined_baseline(result, sim):
 
 def reliability_bins(result, n_bins=4):
     """
-    Test AUC split by similarity to the training set. Shows where the model
-    actually works — the key table for judging plant predictions.
+    Test AUC split by structural similarity to the training set.
+    This is the key table: it shows WHERE the model works. The low-similarity
+    bins predict how it will behave on unfamiliar plant metabolites.
+    Uses fingerprints regardless of what the model trained on, because the
+    question here is structural similarity, not model input.
     """
-    fps_tr = [_fp(s) for s in result["train_df"]["smiles"]]
+    fps_tr = [f for f in (_fp(s) for s in result["train_df"]["smiles"]) if f]
     fps_te = [_fp(s) for s in result["test_df"]["smiles"]]
-    fps_tr = [f for f in fps_tr if f is not None]
 
     max_sim = np.array(
-        [
-            max(BulkTanimotoSimilarity(fp, fps_tr)) if fp is not None else 0.0
-            for fp in fps_te
-        ]
+        [max(BulkTanimotoSimilarity(fp, fps_tr)) if fp else 0.0 for fp in fps_te]
     )
+
     df = pd.DataFrame({"y": result["y_te"], "p": result["proba"], "sim": max_sim})
     df["bin"] = pd.qcut(df["sim"], n_bins, duplicates="drop")
 
@@ -332,6 +305,7 @@ def reliability_bins(result, n_bins=4):
         for b, g in df.groupby("bin", observed=True)
         if g["y"].nunique() == 2
     ]
+
     out = pd.DataFrame(rows, columns=["max Tanimoto to train", "n", "AUC"])
     print(out.to_string(index=False))
     return out
@@ -350,12 +324,12 @@ def plot_roc(results):
 
 
 # ============================================================
-# 5) SAVE
+# 4) SAVE
 # ============================================================
 def find_cutoff(result):
     """
-    Picks the 0/1 threshold by cross-validation on the TRAINING data, using MCC.
-    Done on training data so the test set stays untouched.
+    Picks the 0/1 threshold by cross-validation on the TRAINING data (MCC),
+    so the test set stays untouched. 0.5 is rarely the best choice.
     """
     cv = _make_cv(result["split_mode"])
     groups = (
@@ -381,14 +355,15 @@ def find_cutoff(result):
 
 def save_model(result, tune_cutoff=False):
     """
-    Saves model + the settings needed to reproduce its features, so the API
-    can never featurize differently from how the model was trained.
-    Also writes the training SMILES, needed for the reliability flag.
+    Saves the model together with everything needed to reproduce its input:
+    the feature mode, the column order and the cutoff. Without this the API
+    could featurize differently from how the model was trained.
     """
     cutoff = find_cutoff(result) if tune_cutoff else COX2_CUTOFF
     bundle = {
         "model": result["model"],
-        "feature_mode": result["feature_mode"],
+        "feature_mode": FEATURE_MODE,
+        "feature_cols": result["feature_cols"],  # exact column order
         "fp_size": FP_SIZE,
         "radius": MORGAN_RADIUS,
         "cutoff": cutoff,
@@ -398,8 +373,7 @@ def save_model(result, tune_cutoff=False):
     COX2_MODEL_FILE.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(bundle, COX2_MODEL_FILE)
     result["train_df"][["smiles"]].to_csv(COX2_TRAIN_FILE, index=False)
-    api.reset_cache()  # otherwise the old model stays cached in memory
     print(
-        f"Saved: {COX2_MODEL_FILE}  (mode={bundle['feature_mode']}, "
-        f"cutoff={cutoff:.2f})"
+        f"Saved: {COX2_MODEL_FILE} (cutoff {cutoff:.2f}, "
+        f"{len(bundle['feature_cols'])} features)"
     )
