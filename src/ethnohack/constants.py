@@ -26,3 +26,5 @@ FEATURE_MODE = "ecfp"
 
 COCONUT_CSV = BASE_DIR / "datasets" / "coconut.csv"
 COCONUT_SCORED_CSV = BASE_DIR / "datasets" / "coconut_scored.csv"
+
+PLANT_GENERA_FILE = BASE_DIR / "datasets" / "plant_genera.txt"
