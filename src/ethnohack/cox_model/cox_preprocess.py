@@ -176,13 +176,27 @@ def scaffold_of(smi):
 
 def add_scaffolds(data):
     """
-    Ensures a usable scaffold column. If the raw table already has one it is
-    kept; otherwise it is computed from the SMILES.
+    Ensures a usable scaffold column. An existing one is kept.
+
+    Ring-free molecules have an empty Murcko scaffold, which comes back from a
+    CSV as NaN. Each of those gets its own group, so they are never pooled
+    into one giant "no scaffold" group that would dominate the split.
     """
     data = data.copy()
 
-    if "scaffold" in data.columns and data["scaffold"].notna().all():
-        print(f"Scaffold column already present: {data['scaffold'].nunique()} unique")
+    if "scaffold" in data.columns:
+        blank = data["scaffold"].isna() | (
+            data["scaffold"].astype(str).str.strip().isin(["", "nan", "None"])
+        )
+        if blank.any():
+            print(
+                f"{int(blank.sum())} rows have no scaffold (ring-free): "
+                f"each gets its own group"
+            )
+            data.loc[blank, "scaffold"] = [
+                f"ACYCLIC_{i}" for i in range(int(blank.sum()))
+            ]
+        print(f"Scaffold column present: {data['scaffold'].nunique()} unique")
         return data
 
     if "smiles" not in data.columns:
