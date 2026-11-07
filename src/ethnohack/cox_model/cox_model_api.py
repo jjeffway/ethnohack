@@ -53,7 +53,7 @@ _sim_gen = rdFingerprintGenerator.GetMorganGenerator(
     radius=_SIM_RADIUS, fpSize=_SIM_BITS
 )
 
-_bundle = None  # cached model bundle
+_bundle = None     # cached model bundle
 _train_fps = None  # cached training fingerprints ([] = unavailable)
 
 
@@ -90,10 +90,8 @@ def model_info():
     print(f"cutoff   : {b['cutoff']:.2f}")
     for k, v in b.get("metrics", {}).items():
         print(f"{k:12s}: {v:.3f}")
-    print(
-        f"reliability flag: "
-        f"{'available' if _train_smiles_available() else 'NOT available'}"
-    )
+    print(f"reliability flag: "
+          f"{'available' if _train_smiles_available() else 'NOT available'}")
 
 
 def reset_cache():
@@ -167,10 +165,8 @@ def _load_train_fps():
                 if m is not None
             ]
         except Exception as exc:
-            print(
-                f"Reliability flag unavailable ({exc.__class__.__name__}): "
-                f"no training SMILES at {COX2_TRAIN_FILE}"
-            )
+            print(f"Reliability flag unavailable ({exc.__class__.__name__}): "
+                  f"no training SMILES at {COX2_TRAIN_FILE}")
             _train_fps = []
     return _train_fps
 
@@ -223,9 +219,8 @@ def predict(smiles_list, cutoff=None, with_reliability=True):
             out["max_sim_train"] = [
                 np.nan
                 if m is None
-                else max(
-                    DataStructs.BulkTanimotoSimilarity(_sim_gen.GetFingerprint(m), ref)
-                )
+                else max(DataStructs.BulkTanimotoSimilarity(
+                    _sim_gen.GetFingerprint(m), ref))
                 for m in mols
             ]
             out["in_domain"] = out["max_sim_train"] >= SIM_CUTOFF

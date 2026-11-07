@@ -29,20 +29,10 @@ RDLogger.DisableLog("rdApp.*")
 # "Activity" MUST be in here: it is the label, and if it leaked into the
 # feature list the model would score near 1.0 and mean nothing.
 META_COLS = {
-    "smiles",
-    "Smiles",
-    "canonical_smiles",
-    "flat",
-    "label",
-    "Activity",
-    "activity",
-    "scaffold",
-    "ChEMBL_IDs",
-    "Molecule ChEMBL ID",
-    "inchikey",
-    "name",
-    "source",
-    "id",
+    "smiles", "Smiles", "canonical_smiles", "flat",
+    "label", "Activity", "activity",
+    "scaffold", "ChEMBL_IDs", "Molecule ChEMBL ID",
+    "inchikey", "name", "source", "id",
 }
 
 
@@ -99,17 +89,13 @@ def clean_data(df, label_col=None, smiles_col=None):
             print(f"Unparsable SMILES removed: {int((~ok).sum())}")
             data = data[ok]
     else:
-        print(
-            "WARNING: no SMILES column. Prediction still works, but the "
-            "similarity baseline, the reliability bins and verify_features() "
-            "cannot run."
-        )
+        print("WARNING: no SMILES column. Prediction still works, but the "
+              "similarity baseline, the reliability bins and verify_features() "
+              "cannot run.")
 
     data = data.reset_index(drop=True)
-    print(
-        f"Compounds: {len(data)} | actives: {data['label'].sum()} "
-        f"({data['label'].mean():.1%})"
-    )
+    print(f"Compounds: {len(data)} | actives: {data['label'].sum()} "
+          f"({data['label'].mean():.1%})")
     return data
 
 
@@ -152,10 +138,8 @@ def remove_feature_duplicates(data):
     data = data.drop_duplicates(subset="_key").drop(columns="_key")
     data = data.reset_index(drop=True)
 
-    print(
-        f"Conflicting feature vectors: {len(bad)} groups "
-        f"({n_conflict_rows} rows) removed"
-    )
+    print(f"Conflicting feature vectors: {len(bad)} groups "
+          f"({n_conflict_rows} rows) removed")
     print(f"Duplicate feature vectors:   {n_dupes} rows removed")
     print(f"{before} -> {len(data)} compounds ({data['label'].mean():.1%} active)")
     return data
@@ -171,32 +155,18 @@ def scaffold_of(smi):
     if mol is None:
         return None
     scaf = Chem.MolToSmiles(MurckoScaffold.GetScaffoldForMol(mol))
-    return scaf if scaf != "" else "ACYCLIC_" + str(smi)  # ring-free: own group
+    return scaf if scaf != "" else "ACYCLIC_" + str(smi)   # ring-free: own group
 
 
 def add_scaffolds(data):
     """
-    Ensures a usable scaffold column. An existing one is kept.
-
-    Ring-free molecules have an empty Murcko scaffold, which comes back from a
-    CSV as NaN. Each of those gets its own group, so they are never pooled
-    into one giant "no scaffold" group that would dominate the split.
+    Ensures a usable scaffold column. If the raw table already has one it is
+    kept; otherwise it is computed from the SMILES.
     """
     data = data.copy()
 
-    if "scaffold" in data.columns:
-        blank = data["scaffold"].isna() | (
-            data["scaffold"].astype(str).str.strip().isin(["", "nan", "None"])
-        )
-        if blank.any():
-            print(
-                f"{int(blank.sum())} rows have no scaffold (ring-free): "
-                f"each gets its own group"
-            )
-            data.loc[blank, "scaffold"] = [
-                f"ACYCLIC_{i}" for i in range(int(blank.sum()))
-            ]
-        print(f"Scaffold column present: {data['scaffold'].nunique()} unique")
+    if "scaffold" in data.columns and data["scaffold"].notna().all():
+        print(f"Scaffold column already present: {data['scaffold'].nunique()} unique")
         return data
 
     if "smiles" not in data.columns:
@@ -223,8 +193,7 @@ def add_scaffolds(data):
 def feature_columns(data):
     """All numeric columns that are not metadata = the model's input columns."""
     return [
-        c
-        for c in data.columns
+        c for c in data.columns
         if c not in META_COLS
         and not c.startswith("_")
         and pd.api.types.is_numeric_dtype(data[c])
@@ -262,10 +231,8 @@ def verify_features(data, n=50, tol=1e-3):
     """
     if "smiles" not in data.columns:
         print("Cannot verify: no SMILES column in the table.")
-        print(
-            "You are trusting that the descriptors were computed with plain "
-            "RDKit defaults and not scaled or normalised afterwards."
-        )
+        print("You are trusting that the descriptors were computed with plain "
+              "RDKit defaults and not scaled or normalised afterwards.")
         return None
 
     cols = feature_columns(data)
@@ -287,10 +254,8 @@ def verify_features(data, n=50, tol=1e-3):
         worst = np.nanmax(np.abs(a - b), axis=0)
         bad = [cols[i] for i in np.argsort(-worst)[:5]]
         print(f"MISMATCH above {tol}. Worst columns: {bad}")
-        print(
-            "The descriptors were probably scaled, normalised or computed "
-            "with a different tool. Resolve this before predicting."
-        )
+        print("The descriptors were probably scaled, normalised or computed "
+              "with a different tool. Resolve this before predicting.")
         return False
 
     print("Training and prediction paths agree.")
@@ -300,9 +265,8 @@ def verify_features(data, n=50, tol=1e-3):
 # ============================================================
 # 4) BUILD AND SAVE
 # ============================================================
-def build_dataset(
-    path=COX2_CSV, label_col=None, smiles_col=None, dedupe=True, save=True
-):
+def build_dataset(path=COX2_CSV, label_col=None, smiles_col=None,
+                  dedupe=True, save=True):
     """
     Full preprocessing: load -> clean -> dedupe -> scaffolds -> save.
     No features are computed; they already sit in the raw table.
