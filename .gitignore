@@ -241,3 +241,5 @@ __marimo__/
 /notebooks/feature_corr_selected.csv
 /notebooks/features.csv
 /notebooks/cox2_model_table_threshold02.csv
+/notebooks/5lox_cleaned.csv
+/notebooks/5lox.csv
