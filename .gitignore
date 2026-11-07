@@ -224,6 +224,9 @@ __marimo__/
 
 .information
 /chembl_raw/cox2db.csv
+
+
+/datasets/coconut.csv
 /notebooks/stereo_conflicts.csv
 /notebooks/script.py
 /notebooks/pruning.py
