@@ -1,16 +1,21 @@
 """
 cox_model_api.py
-Loading and using the trained COX-2 classifier. No training code, no feature
-definitions here — features come from cox_preprocess so that prediction can
-never disagree with how the model was trained.
+Loading and using the trained COX-2 classifier. No training code and no
+feature definitions here — features come from cox_preprocess so that
+prediction can never disagree with how the model was trained.
 
 Pipeline: cox_preprocess.py -> cox_train.py -> this file.
+
+The model trains on descriptor columns read from a prepared table. This file
+reproduces those same columns from a SMILES string, which is how the plant
+compounds get scored.
 
 Needs: rdkit, scikit-learn, joblib, numpy, pandas
 
 Usage:
     import ethnohack.cox_model.cox_model_api as cox
 
+    cox.model_info()                    # what was loaded, and how it scored
     df    = cox.predict(smiles_list)    # proba, active, reliability
     X     = cox.featurize(smiles_list)  # feature matrix for TreeSHAP
     names = cox.feature_names()         # column names, same order as X
@@ -23,9 +28,9 @@ TreeSHAP example:
     sv_act = sv[1] if isinstance(sv, list) else sv[..., 1]   # class "active"
     shap.summary_plot(sv_act, X, feature_names=cox.feature_names())
 
-    # Filter to in_domain == True first. Explaining predictions the model
-    # cannot make reliably produces confident-looking but meaningless
-    # rationales.
+    # Filter to in_domain == True first where that column is available.
+    # Explaining predictions the model cannot make reliably produces
+    # confident-looking but meaningless rationales.
 """
 
 import joblib
@@ -40,8 +45,16 @@ from .cox_preprocess import compute_rdkit_features
 
 RDLogger.DisableLog("rdApp.*")
 
+# Only used for the reliability flag (structural similarity to the training
+# set), never for the model's features. Settings are irrelevant to the model,
+# so they are fixed here.
+_SIM_RADIUS, _SIM_BITS = 2, 2048
+_sim_gen = rdFingerprintGenerator.GetMorganGenerator(
+    radius=_SIM_RADIUS, fpSize=_SIM_BITS
+)
+
 _bundle = None  # cached model bundle
-_train_fps = None  # cached training fingerprints
+_train_fps = None  # cached training fingerprints ([] = unavailable)
 
 
 # ============================================================
@@ -51,11 +64,12 @@ def load_bundle(path=COX2_MODEL_FILE):
     """
     Returns the dict saved by cox_train.save_model():
         model         trained RandomForestClassifier
-        feature_mode  "ecfp" | "ecfp_counts" | "ecfp_desc" | "ecfp_extended"
-        feature_cols  exact column order the model expects
-        fp_size, radius, cutoff, split_mode, metrics
-    The feature settings travel WITH the model, so featurize() can never
-    silently disagree with how the model was trained.
+        feature_cols  exact column names and order the model expects
+        cutoff        threshold for the 0/1 call
+        split_mode    "random" or "scaffold"
+        metrics       test-set scores
+    The column list travels WITH the model, so featurize() can never silently
+    hand it the wrong columns.
     """
     global _bundle
     if _bundle is None:
@@ -71,11 +85,15 @@ def load_model(path=COX2_MODEL_FILE):
 def model_info():
     """Prints how the loaded model was built and how well it scored."""
     b = load_bundle()
-    print(f"feature mode : {b['feature_mode']} ({len(b['feature_cols'])} columns)")
-    print(f"split        : {b['split_mode']}")
-    print(f"cutoff       : {b['cutoff']:.2f}")
-    for k, v in b["metrics"].items():
+    print(f"features : {len(b['feature_cols'])} descriptor columns")
+    print(f"split    : {b.get('split_mode', 'unknown')}")
+    print(f"cutoff   : {b['cutoff']:.2f}")
+    for k, v in b.get("metrics", {}).items():
         print(f"{k:12s}: {v:.3f}")
+    print(
+        f"reliability flag: "
+        f"{'available' if _train_smiles_available() else 'NOT available'}"
+    )
 
 
 def reset_cache():
@@ -85,36 +103,30 @@ def reset_cache():
 
 
 # ============================================================
-# FEATURES  (thin wrappers — the real code lives in cox_preprocess)
+# FEATURES
 # ============================================================
-def _fp_generator(bundle):
-    """Fingerprint generator matching the model's settings."""
-    return rdFingerprintGenerator.GetMorganGenerator(
-        radius=bundle["radius"], fpSize=bundle["fp_size"]
-    )
-
-
-def fingerprint(smiles, bundle=None):
-    """SMILES -> RDKit fingerprint object, or None if unparsable."""
-    bundle = bundle or load_bundle()
-    mol = Chem.MolFromSmiles(str(smiles))
-    return None if mol is None else _fp_generator(bundle).GetFingerprint(mol)
-
-
 def featurize(smiles_list):
     """
     SMILES -> numpy array (n_molecules x n_features), in exactly the column
-    order the model was trained on. Settings come from the saved bundle.
-    Unparsable SMILES become all-zero rows, so row order is preserved.
+    order the model was trained on.
 
     Selecting by feature_cols fails loudly with a KeyError if the saved model
     and the current cox_preprocess disagree — far better than silently
     feeding the model the wrong columns.
+
+    Unparsable SMILES become all-zero rows, so row order is preserved. Use
+    predict(), which marks those as NaN instead of scoring them.
     """
     b = load_bundle()
-    df = compute_rdkit_features(
-        smiles_list, mode=b["feature_mode"], fp_size=b["fp_size"], radius=b["radius"]
-    )
+    df = compute_rdkit_features(smiles_list)
+    missing = [c for c in b["feature_cols"] if c not in df.columns]
+    if missing:
+        raise KeyError(
+            f"{len(missing)} trained columns cannot be computed from SMILES: "
+            f"{missing[:10]}. The model was trained on features this code "
+            f"cannot reproduce — retrain, or add their computation to "
+            f"cox_preprocess.compute_rdkit_features()."
+        )
     return df[b["feature_cols"]].to_numpy(dtype=np.float32)
 
 
@@ -122,76 +134,54 @@ def feature_names():
     """
     Column names for SHAP plots, same length and order as featurize().
 
-    Fingerprint columns are named fp_0 ... fp_2047. They are hashed, so one
-    column can be set by different substructures. Treat a column as a hint
-    about what the model used, not as proof of a specific fragment.
+    These are RDKit descriptor names, so each one means exactly one thing:
+    fr_phenol is a count of phenol groups, MolWt is molecular weight. No
+    hashing caveat applies, unlike fingerprint bits.
     """
     return list(load_bundle()["feature_cols"])
 
 
-def explain_bit(bit_index, smiles_list, prefix="fp_"):
-    """
-    Optional helper for readable SHAP labels: finds a substructure that
-    switches fingerprint column `bit_index` on, by scanning the given
-    molecules. Returns a SMILES string, or None if no molecule sets that bit.
-    """
-    b = load_bundle()
-    gen = _fp_generator(b)
-    for s in smiles_list:
-        mol = Chem.MolFromSmiles(str(s))
-        if mol is None:
-            continue
-        info = rdFingerprintGenerator.AdditionalOutput()
-        info.AllocateBitInfoMap()
-        gen.GetFingerprint(mol, additionalOutput=info)
-        envs = info.GetBitInfoMap().get(bit_index)
-        if not envs:
-            continue
-        atom, rad = envs[0]
-        env = Chem.FindAtomEnvironmentOfRadiusN(mol, rad, atom) if rad else None
-        return (
-            Chem.MolFragmentToSmiles(mol, atomsToUse=[atom])
-            if env is None
-            else Chem.MolToSmiles(Chem.PathToSubmol(mol, env))
-        )
-    return None
+# ============================================================
+# RELIABILITY (applicability domain)
+# ============================================================
+def _train_smiles_available():
+    """True if the training SMILES file exists and holds a smiles column."""
+    try:
+        return "smiles" in pd.read_csv(COX2_TRAIN_FILE, nrows=1).columns
+    except Exception:
+        return False
 
 
-def readable_names(smiles_list):
+def _load_train_fps():
     """
-    feature_names() with substructure hints added to the fingerprint columns,
-    e.g. "fp_314 c1ccccc1". Slower than feature_names(); use it for the final
-    SHAP figure rather than for every call.
+    Fingerprints of the training compounds, for the similarity check.
+    Returns [] when the training SMILES are unavailable.
     """
-    names = feature_names()
-    for i, n in enumerate(names):
-        if n.startswith("fp_"):
-            frag = explain_bit(int(n[3:]), smiles_list)
-            if frag:
-                names[i] = f"{n} {frag}"
-    return names
+    global _train_fps
+    if _train_fps is None:
+        try:
+            smis = pd.read_csv(COX2_TRAIN_FILE)["smiles"]
+            _train_fps = [
+                _sim_gen.GetFingerprint(m)
+                for m in (Chem.MolFromSmiles(str(s)) for s in smis)
+                if m is not None
+            ]
+        except Exception as exc:
+            print(
+                f"Reliability flag unavailable ({exc.__class__.__name__}): "
+                f"no training SMILES at {COX2_TRAIN_FILE}"
+            )
+            _train_fps = []
+    return _train_fps
 
 
 # ============================================================
 # PREDICTION
 # ============================================================
-def _load_train_fps(bundle):
-    """Training fingerprints, for the applicability-domain check."""
-    global _train_fps
-    if _train_fps is None:
-        smis = pd.read_csv(COX2_TRAIN_FILE)["smiles"]
-        gen = _fp_generator(bundle)
-        _train_fps = [
-            gen.GetFingerprint(m)
-            for m in (Chem.MolFromSmiles(str(s)) for s in smis)
-            if m is not None
-        ]
-    return _train_fps
-
-
 def predict(smiles_list, cutoff=None, with_reliability=True):
     """
-    Returns a DataFrame: smiles, proba, active, max_sim_train, in_domain.
+    Returns a DataFrame: smiles, proba, active, and where the training SMILES
+    are available also max_sim_train and in_domain.
 
     proba is NaN for unparsable SMILES.
     max_sim_train = highest Tanimoto similarity to any training compound.
@@ -201,15 +191,14 @@ def predict(smiles_list, cutoff=None, with_reliability=True):
     metabolites are often dissimilar, so filter to in_domain == True before
     drawing conclusions.
 
-    Also note: the probabilities are a RANKING, not a verdict. The model
-    performs on par with a nearest-neighbour similarity baseline on this data,
-    so use the scores to compare and rank, not to call a compound active.
+    Also note: the probabilities are a RANKING, not a verdict. On this data
+    the model performs on par with a nearest-neighbour similarity baseline,
+    so use the scores to compare and rank compounds, not to call one active.
     """
     smiles_list = list(smiles_list)
     bundle = load_bundle()
     cutoff = bundle["cutoff"] if cutoff is None else cutoff
 
-    gen = _fp_generator(bundle)
     mols = [Chem.MolFromSmiles(str(s)) for s in smiles_list]
     valid = np.array([m is not None for m in mols])
 
@@ -229,13 +218,26 @@ def predict(smiles_list, cutoff=None, with_reliability=True):
     )
 
     if with_reliability:
-        ref = _load_train_fps(bundle)
-        out["max_sim_train"] = [
-            np.nan
-            if m is None
-            else max(DataStructs.BulkTanimotoSimilarity(gen.GetFingerprint(m), ref))
-            for m in mols
-        ]
-        out["in_domain"] = out["max_sim_train"] >= SIM_CUTOFF
+        ref = _load_train_fps()
+        if ref:
+            out["max_sim_train"] = [
+                np.nan
+                if m is None
+                else max(
+                    DataStructs.BulkTanimotoSimilarity(_sim_gen.GetFingerprint(m), ref)
+                )
+                for m in mols
+            ]
+            out["in_domain"] = out["max_sim_train"] >= SIM_CUTOFF
 
     return out
+
+
+def predict_table(df, smiles_col="smiles", prefix="cox"):
+    """
+    Convenience for the plant data: scores a DataFrame and returns it with
+    the prediction columns appended, keeping every original column.
+    """
+    preds = predict(df[smiles_col]).drop(columns="smiles")
+    preds.columns = [f"{prefix}_{c}" for c in preds.columns]
+    return pd.concat([df.reset_index(drop=True), preds], axis=1)
