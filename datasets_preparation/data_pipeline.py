@@ -29,7 +29,6 @@ Note:
 import argparse
 import itertools
 import sys
-import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -66,6 +65,7 @@ CORE_FEATURES = {
     "Kappa1": Descriptors.Kappa1,  # pyright: ignore[reportAttributeAccessIssue]
     "Kappa2": Descriptors.Kappa2,  # pyright: ignore[reportAttributeAccessIssue]
     "Kappa3": Descriptors.Kappa3,  # pyright: ignore[reportAttributeAccessIssue]
+    "MolLogP": Descriptors.MolLogP,  # pyright: ignore[reportAttributeAccessIssue]
 }
 
 # Build full feature function dictionary
@@ -346,6 +346,7 @@ def build_final_table(df_clean, selected_features):
             table.groupby("flat_smiles")
             .agg(
                 ChEMBL_IDs=("ChEMBL_ID", lambda s: ";".join(map(str, s))),
+                Smiles=("flat_smiles", "first"),
                 scaffold=(SCAFFOLD_COL, "first"),
                 **{LABEL_COL: (LABEL_COL, AGGREGATE)},
                 **{f: (f, "first") for f in feature_cols},
@@ -357,7 +358,10 @@ def build_final_table(df_clean, selected_features):
     elif STEREO_MODE == "keep":
         final = table.rename(columns={"ChEMBL_ID": "ChEMBL_IDs"})
         feature_cols = [f for f in selected_features if f in table.columns]
-        final = final[["ChEMBL_IDs", SCAFFOLD_COL, LABEL_COL] + feature_cols]
+        final = final[
+            ["ChEMBL_IDs", "flat_smiles", SCAFFOLD_COL, LABEL_COL] + feature_cols
+        ]
+        final = final.rename(columns={"flat_smiles": "Smiles"})
     else:
         raise ValueError("STEREO_MODE must be 'merge' or 'keep'")
 
