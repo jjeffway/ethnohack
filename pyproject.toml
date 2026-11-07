@@ -18,6 +18,7 @@ dependencies = [
     "rdkit>=2026.9.1",
     "requests>=2.34.2",
     "scikit-learn>=1.9.1",
+    "seaborn>=0.13.2",
     "shap>=0.54.1",
     "xgboost>=3.4.1",
 ]

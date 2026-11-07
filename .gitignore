@@ -227,3 +227,20 @@ __marimo__/
 
 
 /datasets/coconut.csv
+/notebooks/stereo_conflicts.csv
+/notebooks/script.py
+/notebooks/pruning.py
+/notebooks/merger.py
+/notebooks/finaldbsetup.py
+/feature_corr_high_pairs.csv
+/feature_corr_matrix.csv
+/feature_corr_heatmap.png
+/notebooks/cox2_cleaned.csv
+/notebooks/dbcleanup.ipynb
+/notebooks/feature_corr_dropped.csv
+/notebooks/feature_corr_selected.csv
+/notebooks/features.csv
+/notebooks/cox2_model_table_threshold02.csv
+/notebooks/5lox_cleaned.csv
+/notebooks/5lox.csv
+/chembl_raw/5lox.csv

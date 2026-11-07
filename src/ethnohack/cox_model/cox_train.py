@@ -30,9 +30,6 @@ from ethnohack.constants import (
     COX2_MODEL_FILE,
     COX2_PREPARED_CSV,
     COX2_TRAIN_FILE,
-    FEATURE_MODE,
-    FP_SIZE,
-    MORGAN_RADIUS,
     N_SPLITS,
     RANDOM_STATE,
 )
@@ -61,8 +58,11 @@ from .cox_preprocess import feature_columns
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
+# Fingerprints are used ONLY for the similarity checks below, never for the
+# model's features, so these settings are fixed here and need no constant.
+_SIM_RADIUS, _SIM_BITS = 2, 2048
 _fp_gen = rdFingerprintGenerator.GetMorganGenerator(
-    radius=MORGAN_RADIUS, fpSize=FP_SIZE
+    radius=_SIM_RADIUS, fpSize=_SIM_BITS
 )
 
 
@@ -81,6 +81,15 @@ def _matrix(df, cols):
 def _fp(smiles):
     mol = Chem.MolFromSmiles(str(smiles))
     return None if mol is None else _fp_gen.GetFingerprint(mol)
+
+
+def _has_smiles(result):
+    """
+    The similarity checks compare molecular structures, so they need SMILES.
+    A descriptor-only table has none, and then these checks are skipped
+    rather than crashing. Note the gap on the limitations slide.
+    """
+    return "smiles" in result["train_df"].columns
 
 
 # ============================================================
@@ -240,7 +249,13 @@ def similarity_baseline(result):
     Nearest-active-neighbour search: score each test compound by how similar
     it is to the closest known active. If the model barely beats this, it
     mostly learned "looks like a known active". Worth knowing and reporting.
+
+    Returns None when the table has no SMILES column.
     """
+    if not _has_smiles(result):
+        print("Skipped: the similarity baseline needs a SMILES column.")
+        return None
+
     fps_tr = [_fp(s) for s in result["train_df"]["smiles"]]
     fps_te = [_fp(s) for s in result["test_df"]["smiles"]]
     y_tr, y_te, proba = result["y_tr"], result["y_te"], result["proba"]
@@ -271,6 +286,10 @@ def combined_baseline(result, sim):
     the test scores is selection on the test set. Treat any gain as an
     observation, not a validated result.
     """
+    if sim is None:
+        print("Skipped: no similarity scores to combine with.")
+        return None
+
     y_te = result["y_te"]
     combo = (rankdata(result["proba"]) + rankdata(sim)) / 2
     print(
@@ -289,7 +308,13 @@ def reliability_bins(result, n_bins=4):
     bins predict how it will behave on unfamiliar plant metabolites.
     Uses fingerprints regardless of what the model trained on, because the
     question here is structural similarity, not model input.
+
+    Returns None when the table has no SMILES column.
     """
+    if not _has_smiles(result):
+        print("Skipped: the reliability bins need a SMILES column.")
+        return None
+
     fps_tr = [f for f in (_fp(s) for s in result["train_df"]["smiles"]) if f]
     fps_te = [_fp(s) for s in result["test_df"]["smiles"]]
 
@@ -356,24 +381,31 @@ def find_cutoff(result):
 def save_model(result, tune_cutoff=False):
     """
     Saves the model together with everything needed to reproduce its input:
-    the feature mode, the column order and the cutoff. Without this the API
-    could featurize differently from how the model was trained.
+    the exact feature column order and the cutoff. Without this the API could
+    hand the model different columns from the ones it was trained on.
+
+    The training SMILES are written alongside when available; they are what
+    the API's reliability flag compares new molecules against.
     """
     cutoff = find_cutoff(result) if tune_cutoff else COX2_CUTOFF
     bundle = {
         "model": result["model"],
-        "feature_mode": FEATURE_MODE,
         "feature_cols": result["feature_cols"],  # exact column order
-        "fp_size": FP_SIZE,
-        "radius": MORGAN_RADIUS,
         "cutoff": cutoff,
         "split_mode": result["split_mode"],
         "metrics": result["metrics"],
     }
     COX2_MODEL_FILE.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(bundle, COX2_MODEL_FILE)
-    result["train_df"][["smiles"]].to_csv(COX2_TRAIN_FILE, index=False)
     print(
         f"Saved: {COX2_MODEL_FILE} (cutoff {cutoff:.2f}, "
         f"{len(bundle['feature_cols'])} features)"
     )
+
+    if _has_smiles(result):
+        COX2_TRAIN_FILE.parent.mkdir(parents=True, exist_ok=True)
+        result["train_df"][["smiles"]].to_csv(COX2_TRAIN_FILE, index=False)
+        print(f"Saved: {COX2_TRAIN_FILE} ({len(result['train_df'])} training SMILES)")
+    else:
+        print("No SMILES column: the reliability flag will be unavailable "
+              "at prediction time.")
