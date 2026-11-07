@@ -3,10 +3,6 @@ from pathlib import Path
 # file directory
 BASE_DIR = Path(__file__).resolve().parents[2]
 
-# default fingerprint settings
-MORGAN_RADIUS = 2
-FP_SIZE = 2048
-
 # cox2
 COX2_CSV = BASE_DIR / "datasets" / "cox2_cleaned.csv"
 COX2_PREPARED_CSV = BASE_DIR / "datasets" / "cox2_prepared.csv"
@@ -20,8 +16,6 @@ COX2_CUTOFF = (
 SIM_CUTOFF = 0.5  # min Tanimoto similarity to training set for in_domain
 N_SPLITS = 5
 RANDOM_STATE = 42
-# "ecfp" = 2048-bit ECFP4, "ecfp_counts" = substructure counts, "ecfp_desc" = ECFP4 + 10 properties
-FEATURE_MODE = "ecfp"
 
 
 COCONUT_CSV = BASE_DIR / "datasets" / "coconut.csv"

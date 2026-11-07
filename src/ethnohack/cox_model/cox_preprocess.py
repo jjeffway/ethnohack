@@ -1,128 +1,111 @@
 """
 cox_preprocess.py
-Step 1 of 2: raw data -> clean, scaffolded, featurised table.
+Step 1 of 2: raw table -> clean, scaffolded, model-ready table.
 
-Run this whenever the raw data or the feature set changes.
-Writes COX2_PREPARED_CSV, which cox_train.py reads.
+IMPORTANT: the raw table already carries the descriptor columns, so NO
+features are computed during training. compute_rdkit_features() exists for
+PREDICTION, where the same columns must be derived from a plant SMILES.
 
 Needs: rdkit, numpy, pandas
 
 Usage (notebook):
     import ethnohack.cox_model.cox_preprocess as prep
-    data = prep.build_dataset()          # does everything, writes the CSV
-    data.head()
+
+    data = prep.build_dataset()        # does everything, writes the CSV
+    prep.verify_features(data)         # only possible if a SMILES column exists
 """
 
 import numpy as np
 import pandas as pd
-from ethnohack.constants import (
-    COX2_CSV,
-    COX2_PREPARED_CSV,
-    FEATURE_MODE,
-    FP_SIZE,
-    MORGAN_RADIUS,
-)
-from rdkit import Chem, DataStructs, RDLogger
-from rdkit.Chem import (
-    Descriptors,
-    MACCSkeys,
-    rdFingerprintGenerator,
-    rdMolDescriptors,
-    rdReducedGraphs,
-)
+from ethnohack.constants import COX2_CSV, COX2_PREPARED_CSV
+from rdkit import Chem, RDLogger
+from rdkit.Chem import Descriptors
 from rdkit.Chem.Scaffolds import MurckoScaffold
 
 RDLogger.DisableLog("rdApp.*")
 
-# Columns that describe the molecule rather than being model input.
-# Everything else numeric in the prepared table is treated as a feature.
-META_COLS = {"smiles", "label", "scaffold", "inchikey", "name", "source", "id"}
-
-# 10 simple physicochemical properties
-DESC = [
-    ("MolWt", Descriptors.MolWt),
-    ("MolLogP", Descriptors.MolLogP),
-    ("TPSA", Descriptors.TPSA),
-    ("NumHDonors", Descriptors.NumHDonors),
-    ("NumHAcceptors", Descriptors.NumHAcceptors),
-    ("NumRotatableBonds", Descriptors.NumRotatableBonds),
-    ("NumRings", rdMolDescriptors.CalcNumRings),
-    ("NumAromaticRings", rdMolDescriptors.CalcNumAromaticRings),
-    ("FractionCSP3", rdMolDescriptors.CalcFractionCSP3),
-    ("HeavyAtomCount", Descriptors.HeavyAtomCount),
-]
-
-_MACCS_LEN = 167  # 166 keys + unused bit 0
-# ErG length depends on RDKit's default path settings, so measure it once
-_ERG_LEN = len(rdReducedGraphs.GetErGFingerprint(Chem.MolFromSmiles("c1ccccc1")))
+# Columns that identify or label a molecule rather than describing it.
+# Everything else numeric in the prepared table becomes a model feature.
+# "Activity" MUST be in here: it is the label, and if it leaked into the
+# feature list the model would score near 1.0 and mean nothing.
+META_COLS = {
+    "smiles",
+    "Smiles",
+    "canonical_smiles",
+    "flat",
+    "label",
+    "Activity",
+    "activity",
+    "scaffold",
+    "ChEMBL_IDs",
+    "Molecule ChEMBL ID",
+    "inchikey",
+    "name",
+    "source",
+    "id",
+}
 
 
 # ============================================================
-# 1) CLEANING
+# 1) LOADING AND CLEANING
 # ============================================================
 def load_raw(path=COX2_CSV):
-    return pd.read_csv(path)
+    """Reads the raw CSV as it comes from the feature-engineering step."""
+    df = pd.read_csv(path)
+    print(f"Raw: {len(df)} rows, {len(df.columns)} columns")
+    return df
 
 
-def remove_stereo_conflicts(data, label_col="label", smiles_col="smiles"):
+def find_column(df, candidates, required=True, what="column"):
+    """Finds a column by any of several possible names, case-insensitive."""
+    lower = {c.lower(): c for c in df.columns}
+    for cand in candidates:
+        if cand.lower() in lower:
+            return lower[cand.lower()]
+    if required:
+        raise KeyError(f"No {what} found. Tried: {candidates}")
+    return None
+
+
+def clean_data(df, label_col=None, smiles_col=None):
     """
-    Morgan fingerprints ignore chirality by default, so stereoisomers of the
-    same 2D structure get IDENTICAL feature vectors. Where they carry
-    different labels the model cannot resolve them, and they can leak across
-    a scaffold split unnoticed. Here we drop those groups and keep one row
-    per 2D structure.
+    Returns a table with a 'label' column (0/1) plus every other column
+    carried through unchanged.
 
-    Note this discards real chemistry: COX inhibition by profens is
-    stereoselective (the S-enantiomer is the active one). The model simply
-    cannot represent it, so the rows are noise rather than signal.
+    Renaming the label to 'label' is not cosmetic: feature_columns() excludes
+    'label', so a column still called 'Activity' would be treated as a feature.
     """
-    data = data.copy()
-    data["flat"] = data[smiles_col].apply(
-        lambda s: (
-            lambda m: (
-                None
-                if m is None
-                else (Chem.RemoveStereochemistry(m), Chem.MolToSmiles(m))[1]
-            )
-        )(Chem.MolFromSmiles(str(s)))
+    data = df.copy()
+
+    label_col = label_col or find_column(
+        data, ["Activity", "activity", "label"], what="label column"
     )
-    data = data.dropna(subset=["flat"])
+    if label_col != "label":
+        data = data.rename(columns={label_col: "label"})
+        print(f"Renamed label column: {label_col!r} -> 'label'")
 
-    conflict = data.groupby("flat")[label_col].nunique()
-    bad = set(conflict[conflict > 1].index)
-    n_rows = data["flat"].isin(bad).sum()
-
-    data = data[~data["flat"].isin(bad)]
-    n_dupes = data["flat"].duplicated().sum()
-    data = data.drop_duplicates(subset="flat").reset_index(drop=True)
-
-    print(f"Stereo conflicts: {len(bad)} structures ({n_rows} rows) removed")
-    print(f"Stereo duplicates: {n_dupes} rows removed")
-    return data
-
-
-def clean_data(df, smiles_col="Smiles", label_col="Activity", keep_cols=None):
-    """
-    Returns a DataFrame with smiles, label, plus any columns in keep_cols
-    (use this to carry your friend's extra descriptor columns through).
-    SMILES are assumed canonical already.
-    """
-    keep_cols = list(keep_cols or [])
-    data = df[[smiles_col, label_col] + keep_cols].copy()
-    data = data.rename(columns={smiles_col: "smiles", label_col: "label"})
     data["label"] = data["label"].astype(int)
-    data = data.dropna(subset=["smiles"])
 
-    ok = data["smiles"].apply(lambda s: Chem.MolFromSmiles(str(s)) is not None)
-    print("Unparsable SMILES removed:", int((~ok).sum()))
-    data = data[ok]
+    # a SMILES column is optional here, but it enables the similarity checks,
+    # the reliability bins and verify_features()
+    smiles_col = smiles_col or find_column(
+        data, ["smiles", "canonical_smiles"], required=False, what="SMILES column"
+    )
+    if smiles_col:
+        if smiles_col != "smiles":
+            data = data.rename(columns={smiles_col: "smiles"})
+        ok = data["smiles"].apply(lambda s: Chem.MolFromSmiles(str(s)) is not None)
+        if (~ok).any():
+            print(f"Unparsable SMILES removed: {int((~ok).sum())}")
+            data = data[ok]
+    else:
+        print(
+            "WARNING: no SMILES column. Prediction still works, but the "
+            "similarity baseline, the reliability bins and verify_features() "
+            "cannot run."
+        )
 
-    # same molecule labelled both 0 and 1 -> untrustworthy, drop it entirely
-    conflict = data.groupby("smiles")["label"].nunique()
-    data = data[~data["smiles"].isin(conflict[conflict > 1].index)]
-    data = data.drop_duplicates(subset="smiles").reset_index(drop=True)
-    data = remove_stereo_conflicts(data)
-
+    data = data.reset_index(drop=True)
     print(
         f"Compounds: {len(data)} | actives: {data['label'].sum()} "
         f"({data['label'].mean():.1%})"
@@ -130,130 +113,215 @@ def clean_data(df, smiles_col="Smiles", label_col="Activity", keep_cols=None):
     return data
 
 
+def remove_feature_duplicates(data):
+    """
+    Drops rows that are indistinguishable to the model.
+
+    Why this matters here: the descriptor columns are stereo-blind. MolWt,
+    TPSA, the fr_* fragment counts and the EState_VSA columns all give
+    identical values for two enantiomers. So stereoisomers become duplicate
+    rows in feature space, and where they carry different labels the model
+    cannot resolve them in principle. Such rows also leak across a scaffold
+    split unnoticed, because the scaffold strings may differ while the
+    features do not.
+
+    Note this discards real chemistry: COX inhibition by profens is
+    stereoselective. The representation simply cannot express it, so those
+    rows are noise rather than signal.
+    """
+    cols = feature_columns(data)
+    if not cols:
+        print("No feature columns yet, skipping duplicate removal")
+        return data
+
+    before = len(data)
+
+    # hash each feature row so identical vectors group together;
+    # rounding absorbs tiny floating-point differences
+    key = pd.util.hash_pandas_object(data[cols].round(6), index=False)
+    data = data.assign(_key=key)
+
+    # 1) groups whose rows disagree about the label
+    conflict = data.groupby("_key")["label"].nunique()
+    bad = set(conflict[conflict > 1].index)
+    n_conflict_rows = int(data["_key"].isin(bad).sum())
+    data = data[~data["_key"].isin(bad)]
+
+    # 2) the remaining duplicates agree on the label, so keep one of each
+    n_dupes = int(data["_key"].duplicated().sum())
+    data = data.drop_duplicates(subset="_key").drop(columns="_key")
+    data = data.reset_index(drop=True)
+
+    print(
+        f"Conflicting feature vectors: {len(bad)} groups "
+        f"({n_conflict_rows} rows) removed"
+    )
+    print(f"Duplicate feature vectors:   {n_dupes} rows removed")
+    print(f"{before} -> {len(data)} compounds ({data['label'].mean():.1%} active)")
+    return data
+
+
+# ============================================================
+# 2) SCAFFOLDS
+#    Used to group analogues so they cannot land on both sides of the split.
+# ============================================================
 def scaffold_of(smi):
     """Murcko scaffold = the ring core, side chains stripped off."""
-    mol = Chem.MolFromSmiles(smi)
+    mol = Chem.MolFromSmiles(str(smi))
+    if mol is None:
+        return None
     scaf = Chem.MolToSmiles(MurckoScaffold.GetScaffoldForMol(mol))
-    return scaf if scaf != "" else "ACYCLIC_" + smi  # ring-free: own group
+    return scaf if scaf != "" else "ACYCLIC_" + str(smi)  # ring-free: own group
 
 
 def add_scaffolds(data):
-    """Adds the scaffold column used to group molecules for the honest split."""
+    """
+    Ensures a usable scaffold column. An existing one is kept.
+
+    Ring-free molecules have an empty Murcko scaffold, which comes back from a
+    CSV as NaN. Each of those gets its own group, so they are never pooled
+    into one giant "no scaffold" group that would dominate the split.
+    """
     data = data.copy()
 
-    source = "flat" if "flat" in data.columns else "smiles"
-    data["scaffold"] = data[source].apply(scaffold_of)
+    if "scaffold" in data.columns:
+        blank = data["scaffold"].isna() | (
+            data["scaffold"].astype(str).str.strip().isin(["", "nan", "None"])
+        )
+        if blank.any():
+            print(
+                f"{int(blank.sum())} rows have no scaffold (ring-free): "
+                f"each gets its own group"
+            )
+            data.loc[blank, "scaffold"] = [
+                f"ACYCLIC_{i}" for i in range(int(blank.sum()))
+            ]
+        print(f"Scaffold column present: {data['scaffold'].nunique()} unique")
+        return data
+
+    if "smiles" not in data.columns:
+        raise KeyError(
+            "No scaffold column and no SMILES to compute one from. "
+            "The scaffold split needs one of the two."
+        )
+
+    data["scaffold"] = data["smiles"].apply(scaffold_of)
+    missing = data["scaffold"].isna().sum()
+    if missing:
+        print(f"Dropping {missing} rows without a scaffold")
+        data = data.dropna(subset=["scaffold"]).reset_index(drop=True)
     print(f"Unique scaffolds: {data['scaffold'].nunique()}")
     return data
 
 
 # ============================================================
-# 2) FEATURES
-#    This is the ONE place features are defined. Training and prediction
-#    both call compute_rdkit_features, so they can never disagree.
-#
-#    Modes:
-#      ecfp           2048 fingerprint bits
-#      ecfp_counts    same, but counts instead of 0/1
-#      ecfp_desc      fingerprint + 10 properties
-#      ecfp_extended  fingerprint + ErG + MACCS + 10 properties
+# 3) FEATURES
+#    Training reads the descriptor columns straight from the table.
+#    compute_rdkit_features() is the PREDICTION path: it must be able to
+#    reproduce those same columns from a SMILES string alone.
 # ============================================================
-def feature_spec(mode=FEATURE_MODE, fp_size=FP_SIZE):
-    """Returns the column names this mode produces, in order."""
-    names = [f"fp_{i}" for i in range(fp_size)]
-    if mode == "ecfp_desc":
-        names += [n for n, _ in DESC]
-    elif mode == "ecfp_extended":
-        names += [f"ErG_{i}" for i in range(_ERG_LEN)]
-        names += [f"MACCS_{i}" for i in range(_MACCS_LEN)]
-        names += [n for n, _ in DESC]
-    return names
-
-
-def compute_rdkit_features(
-    smiles_list, mode=FEATURE_MODE, fp_size=FP_SIZE, radius=MORGAN_RADIUS
-):
-    """
-    SMILES -> DataFrame of features (one row per molecule, order preserved).
-    Unparsable SMILES give all-zero rows.
-
-    >>> ADD NEW FEATURES HERE <<<
-    Anything added must be computable from the SMILES alone, otherwise it
-    cannot be produced for the plant compounds at prediction time.
-    Remember to add the matching names to feature_spec().
-    """
-    gen = rdFingerprintGenerator.GetMorganGenerator(radius=radius, fpSize=fp_size)
-    names = feature_spec(mode, fp_size)
-    n_cols = len(names)
-
-    rows = []
-    for s in smiles_list:
-        vec = np.zeros((n_cols,), dtype=np.float32)
-        mol = Chem.MolFromSmiles(str(s))
-        if mol is not None:
-            if mode == "ecfp_counts":
-                # counts matter when a substructure appearing 3x is meaningful
-                vec[:fp_size] = gen.GetCountFingerprintAsNumPy(mol)
-            else:
-                arr = np.zeros((fp_size,), dtype=np.uint8)
-                DataStructs.ConvertToNumpyArray(gen.GetFingerprint(mol), arr)
-                vec[:fp_size] = arr
-
-            extra = []
-            if mode == "ecfp_extended":
-                # ErG = pharmacophore pattern, built for scaffold hopping:
-                # it may transfer better to unfamiliar plant chemistry
-                extra.append(
-                    np.array(rdReducedGraphs.GetErGFingerprint(mol), dtype=np.float32)
-                )
-                maccs = np.zeros((_MACCS_LEN,), dtype=np.uint8)
-                DataStructs.ConvertToNumpyArray(MACCSkeys.GenMACCSKeys(mol), maccs)
-                extra.append(maccs.astype(np.float32))
-            if mode in ("ecfp_desc", "ecfp_extended"):
-                extra.append(np.array([f(mol) for _, f in DESC], dtype=np.float32))
-
-            if extra:
-                vec[fp_size:] = np.concatenate(extra)
-        rows.append(vec)
-
-    X = np.nan_to_num(np.vstack(rows), nan=0.0, posinf=0.0, neginf=0.0)
-    return pd.DataFrame(X, columns=names)
-
-
 def feature_columns(data):
     """All numeric columns that are not metadata = the model's input columns."""
     return [
         c
         for c in data.columns
-        if c not in META_COLS and pd.api.types.is_numeric_dtype(data[c])
+        if c not in META_COLS
+        and not c.startswith("_")
+        and pd.api.types.is_numeric_dtype(data[c])
     ]
 
 
-# if you need to add some columns you can do it with this: prep.build_dataset(keep_cols=["her_descriptor_1", "her_descriptor_2"]) in the notebook when your calling on it if they are descriptors that you got externally, if it is from rdkit you can add it internally as well you can add them to DESC in the beginning
+def compute_rdkit_features(smiles_list):
+    """
+    SMILES -> DataFrame of ALL RDKit descriptors (~210 columns).
+
+    Deliberately a superset: featurize() in the API selects the subset the
+    model was trained on, so this does not need to know which columns were
+    kept during feature selection.
+
+    Anything added here must be computable from a SMILES alone, otherwise it
+    cannot be produced for the plant compounds at prediction time.
+    Unparsable SMILES give all-zero rows, so row order is preserved.
+    """
+    rows = []
+    for s in smiles_list:
+        mol = Chem.MolFromSmiles(str(s))
+        rows.append({} if mol is None else Descriptors.CalcMolDescriptors(mol))
+    df = pd.DataFrame(rows)
+    return df.replace([np.inf, -np.inf], 0.0).fillna(0.0).astype(np.float32)
+
+
+def verify_features(data, n=50, tol=1e-3):
+    """
+    Checks that compute_rdkit_features() reproduces the table's descriptor
+    columns. This is the single most important check in the pipeline: training
+    reads columns from a file while prediction computes them, and if the two
+    disagree the model silently receives wrong input on the plant compounds.
+
+    Needs a SMILES column. Returns True when the two paths agree.
+    """
+    if "smiles" not in data.columns:
+        print("Cannot verify: no SMILES column in the table.")
+        print(
+            "You are trusting that the descriptors were computed with plain "
+            "RDKit defaults and not scaled or normalised afterwards."
+        )
+        return None
+
+    cols = feature_columns(data)
+    sample = data.head(n)
+    recomputed = compute_rdkit_features(sample["smiles"])
+
+    missing = sorted(set(cols) - set(recomputed.columns))
+    if missing:
+        print(f"NOT reproducible by RDKit ({len(missing)}): {missing[:10]}")
+        print("Prediction on new molecules will fail for these columns.")
+        return False
+
+    a = sample[cols].to_numpy(dtype=float)
+    b = recomputed[cols].to_numpy(dtype=float)
+    diff = np.nanmax(np.abs(a - b))
+    print(f"All {len(cols)} columns reproducible | largest difference: {diff:.6g}")
+
+    if diff > tol:
+        worst = np.nanmax(np.abs(a - b), axis=0)
+        bad = [cols[i] for i in np.argsort(-worst)[:5]]
+        print(f"MISMATCH above {tol}. Worst columns: {bad}")
+        print(
+            "The descriptors were probably scaled, normalised or computed "
+            "with a different tool. Resolve this before predicting."
+        )
+        return False
+
+    print("Training and prediction paths agree.")
+    return True
 
 
 # ============================================================
-# 3) BUILD AND SAVE
+# 4) BUILD AND SAVE
 # ============================================================
 def build_dataset(
-    path=COX2_CSV,
-    smiles_col="Smiles",
-    label_col="Activity",
-    keep_cols=None,
-    mode=FEATURE_MODE,
-    save=True,
+    path=COX2_CSV, label_col=None, smiles_col=None, dedupe=True, save=True
 ):
     """
-    Full preprocessing: load -> clean -> scaffolds -> features -> save.
-    keep_cols: extra columns from the raw file to carry through as features.
+    Full preprocessing: load -> clean -> dedupe -> scaffolds -> save.
+    No features are computed; they already sit in the raw table.
     """
-    data = add_scaffolds(clean_data(load_raw(path), smiles_col, label_col, keep_cols))
+    data = clean_data(load_raw(path), label_col, smiles_col)
 
-    feats = compute_rdkit_features(data["smiles"], mode)
-    feats.index = data.index
-    data = pd.concat([data, feats], axis=1)
+    if dedupe:
+        data = remove_feature_duplicates(data)
 
-    print(f"Feature columns: {len(feature_columns(data))}  (mode: {mode})")
+    data = add_scaffolds(data)
+
+    cols = feature_columns(data)
+    print(f"\nFeature columns: {len(cols)}")
+    print(f"First few: {cols[:8]}")
+
+    # guard against the worst possible mistake in this pipeline
+    assert "label" not in cols, "the label leaked into the feature list!"
+    for name in ("Activity", "activity"):
+        assert name not in cols, f"{name!r} leaked into the feature list!"
 
     if save:
         COX2_PREPARED_CSV.parent.mkdir(parents=True, exist_ok=True)
