@@ -59,15 +59,28 @@ _sim_gen = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=2048)
 # Score columns from an earlier single-target run. They are dropped on load,
 # because after this script "proba" would be ambiguous between two targets.
 STALE_COLS = [
-    "proba", "active", "max_sim_train", "in_domain",
-    "confidence", "near_duplicate", "rank_pct",
+    "proba",
+    "active",
+    "max_sim_train",
+    "in_domain",
+    "confidence",
+    "near_duplicate",
+    "rank_pct",
 ]
 
 # Metadata worth keeping for the plant-level analysis that comes next.
 KEEP_COLS = [
-    "id", "name", "parent_id", "std_smiles", "smiles",
-    "organisms", "plants", "n_plant_species", "is_plant",
-    "n_variants", "all_ids",
+    "id",
+    "name",
+    "parent_id",
+    "std_smiles",
+    "smiles",
+    "organisms",
+    "plants",
+    "n_plant_species",
+    "is_plant",
+    "n_variants",
+    "all_ids",
 ]
 
 
@@ -86,11 +99,15 @@ class Target:
         self.metrics = bundle.get("metrics", {})
         self.train_fps = self._load_train_fps(train_file)
 
-        print(f"{name}: {len(self.cols)} features | cutoff {self.cutoff:.2f} "
-              f"| {len(self.train_fps)} training fingerprints")
+        print(
+            f"{name}: {len(self.cols)} features | cutoff {self.cutoff:.2f} "
+            f"| {len(self.train_fps)} training fingerprints"
+        )
         if self.metrics:
-            print(f"  test ROC-AUC {self.metrics.get('roc_auc', float('nan')):.3f} "
-                  f"| PR-AUC {self.metrics.get('pr_auc', float('nan')):.3f}")
+            print(
+                f"  test ROC-AUC {self.metrics.get('roc_auc', float('nan')):.3f} "
+                f"| PR-AUC {self.metrics.get('pr_auc', float('nan')):.3f}"
+            )
 
     @staticmethod
     def _load_train_fps(train_file):
@@ -98,8 +115,10 @@ class Target:
         try:
             smis = pd.read_csv(train_file)["smiles"]
         except Exception as exc:
-            print(f"  WARNING: no training SMILES at {train_file} "
-                  f"({exc.__class__.__name__}): similarity will be NaN")
+            print(
+                f"  WARNING: no training SMILES at {train_file} "
+                f"({exc.__class__.__name__}): similarity will be NaN"
+            )
             return []
         return [
             _sim_gen.GetFingerprint(m)
@@ -124,11 +143,14 @@ class Target:
         """Highest Tanimoto similarity of each molecule to this target's training set."""
         if not self.train_fps:
             return np.full(len(fps), np.nan)
-        return np.array([
-            np.nan if fp is None
-            else max(DataStructs.BulkTanimotoSimilarity(fp, self.train_fps))
-            for fp in fps
-        ])
+        return np.array(
+            [
+                np.nan
+                if fp is None
+                else max(DataStructs.BulkTanimotoSimilarity(fp, self.train_fps))
+                for fp in fps
+            ]
+        )
 
 
 # ============================================================
@@ -172,7 +194,7 @@ def score_chunk(chunk, targets):
     mols = [Chem.MolFromSmiles(s) for s in smiles]
     valid = pd.Series([m is not None for m in mols])
 
-    desc = compute_rdkit_features(smiles)            # once, shared by both models
+    desc = compute_rdkit_features(smiles)  # once, shared by both models
     fps = [None if m is None else _sim_gen.GetFingerprint(m) for m in mols]
 
     out = {}
@@ -215,8 +237,10 @@ def run(coconut_path, out_path=None, limit=None, chunk_size=5000, save_every=20)
     interrupted kernel does not lose the work done so far.
     """
     coconut_path = Path(coconut_path)
-    out_path = Path(out_path) if out_path else coconut_path.with_name(
-        coconut_path.stem + "_dual_scored.csv"
+    out_path = (
+        Path(out_path)
+        if out_path
+        else coconut_path.with_name(coconut_path.stem + "_dual_scored.csv")
     )
 
     print("=" * 60)
@@ -229,7 +253,7 @@ def run(coconut_path, out_path=None, limit=None, chunk_size=5000, save_every=20)
     df = load_coconut(coconut_path, limit=limit)
     keep = [c for c in KEEP_COLS if c in df.columns]
 
-    chunks = [df.iloc[i:i + chunk_size] for i in range(0, len(df), chunk_size)]
+    chunks = [df.iloc[i : i + chunk_size] for i in range(0, len(df), chunk_size)]
     print(f"\nScoring {len(df)} compounds in {len(chunks)} chunks of {chunk_size}")
 
     start = time.time()
@@ -241,18 +265,17 @@ def run(coconut_path, out_path=None, limit=None, chunk_size=5000, save_every=20)
         elapsed = time.time() - start
         rate = done / elapsed if elapsed else 0
         remaining = (len(df) - done) / rate / 60 if rate else 0
-        print(f"  chunk {i}/{len(chunks)} | {done}/{len(df)} | "
-              f"{rate:.0f} mol/s | ~{remaining:.0f} min left", flush=True)
+        print(
+            f"  chunk {i}/{len(chunks)} | {done}/{len(df)} | "
+            f"{rate:.0f} mol/s | ~{remaining:.0f} min left",
+            flush=True,
+        )
 
         if i % save_every == 0 or i == len(chunks):
-            partial = pd.concat(
-                [df[keep].iloc[:done], pd.concat(scored)], axis=1
-            )
+            partial = pd.concat([df[keep].iloc[:done], pd.concat(scored)], axis=1)
             add_dual_columns(partial, targets).to_csv(out_path, index=False)
 
-    out = add_dual_columns(
-        pd.concat([df[keep], pd.concat(scored)], axis=1), targets
-    )
+    out = add_dual_columns(pd.concat([df[keep], pd.concat(scored)], axis=1), targets)
     out = out.sort_values("dual_score", ascending=False).reset_index(drop=True)
     out.to_csv(out_path, index=False)
 
@@ -277,31 +300,44 @@ def summarize(out):
         if f"{t}_proba" not in out.columns:
             continue
         p, dom = out[f"{t}_proba"], out[f"{t}_in_domain"]
-        print(f"{t}: mean proba {p.mean():.3f} | "
-              f"active {int((out[f'{t}_active'] == 1).sum())} "
-              f"({(out[f'{t}_active'] == 1).mean():.1%}) | "
-              f"in domain {dom.mean():.1%} | "
-              f"median similarity {out[f'{t}_max_sim'].median():.2f}")
+        print(
+            f"{t}: mean proba {p.mean():.3f} | "
+            f"active {int((out[f'{t}_active'] == 1).sum())} "
+            f"({(out[f'{t}_active'] == 1).mean():.1%}) | "
+            f"in domain {dom.mean():.1%} | "
+            f"median similarity {out[f'{t}_max_sim'].median():.2f}"
+        )
 
     if "dual_active" in out.columns:
-        print(f"\ndual active        : {int(out['dual_active'].sum())} "
-              f"({out['dual_active'].mean():.2%})")
-        print(f"dual in domain     : {int(out['dual_in_domain'].sum())} "
-              f"({out['dual_in_domain'].mean():.2%})")
+        print(
+            f"\ndual active        : {int(out['dual_active'].sum())} "
+            f"({out['dual_active'].mean():.2%})"
+        )
+        print(
+            f"dual in domain     : {int(out['dual_in_domain'].sum())} "
+            f"({out['dual_in_domain'].mean():.2%})"
+        )
         both = out["dual_active"] & out["dual_in_domain"]
         print(f"dual active AND reliable: {int(both.sum())}")
 
-    print("\nReminder: these probabilities are a RANKING, not a verdict. Both "
-          "models perform close to a nearest-neighbour similarity baseline, so "
-          "treat hits as hypotheses and compare plants rather than trusting "
-          "single compounds.")
+    print(
+        "\nReminder: these probabilities are a RANKING, not a verdict. Both "
+        "models perform close to a nearest-neighbour similarity baseline, so "
+        "treat hits as hypotheses and compare plants rather than trusting "
+        "single compounds."
+    )
 
-    low = [t for t in ("cox2", "lox5")
-           if f"{t}_in_domain" in out.columns and out[f"{t}_in_domain"].mean() < 0.3]
+    low = [
+        t
+        for t in ("cox2", "lox5")
+        if f"{t}_in_domain" in out.columns and out[f"{t}_in_domain"].mean() < 0.3
+    ]
     if low:
-        print(f"\nNOTE: most compounds are OUT of domain for {low}. Those "
-              f"predictions sit in the weaker performance range, so say so "
-              f"when you report the results.")
+        print(
+            f"\nNOTE: most compounds are OUT of domain for {low}. Those "
+            f"predictions sit in the weaker performance range, so say so "
+            f"when you report the results."
+        )
 
 
 def top_hits(out, n=50, dual_only=True, in_domain_only=False):
@@ -312,11 +348,22 @@ def top_hits(out, n=50, dual_only=True, in_domain_only=False):
     if in_domain_only and "dual_in_domain" in sel.columns:
         sel = sel[sel["dual_in_domain"]]
 
-    cols = [c for c in (
-        "id", "name", "plants", "n_plant_species",
-        "cox2_proba", "lox5_proba", "dual_score",
-        "cox2_max_sim", "lox5_max_sim", "dual_in_domain",
-    ) if c in sel.columns]
+    cols = [
+        c
+        for c in (
+            "id",
+            "name",
+            "plants",
+            "n_plant_species",
+            "cox2_proba",
+            "lox5_proba",
+            "dual_score",
+            "cox2_max_sim",
+            "lox5_max_sim",
+            "dual_in_domain",
+        )
+        if c in sel.columns
+    ]
 
     return sel.sort_values("dual_score", ascending=False).head(n)[cols]
 
@@ -330,15 +377,20 @@ def main():
     )
     parser.add_argument("coconut", nargs="?", help="path to the COCONUT CSV")
     parser.add_argument("--out", default=None, help="output CSV path")
-    parser.add_argument("--limit", type=int, default=None,
-                        help="score a random sample of this many compounds")
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="score a random sample of this many compounds",
+    )
     parser.add_argument("--chunk-size", type=int, default=5000)
     args = parser.parse_args()
 
     path = args.coconut
     if path is None:
-        from ethnohack.constants import COCONUT_SCORES_FILE
-        path = COCONUT_SCORES_FILE
+        from ethnohack.constants import COCONUT_SCORED_CSV
+
+        path = COCONUT_SCORED_CSV
 
     run(path, out_path=args.out, limit=args.limit, chunk_size=args.chunk_size)
 
