@@ -2,7 +2,7 @@
 coconut.py
 Load natural products from a COCONUT CSV download, clean them up, keep only
 plant compounds, remove anything the model was trained on, and score the rest
-with the saved COX-2 model.
+with a saved model -- COX-2 by default, or 5-LOX by passing api=lox5_api.
 
 Download the CSV from https://coconut.naturalproducts.net/download and put it
 at COCONUT_CSV. Use a download that includes the ORGANISM column (check with
@@ -27,6 +27,13 @@ Usage (notebook):
     scored = coco.score_coconut(coconut)        # also adds confidence tiers
     coco.summarize(scored)
 
+    # for 5-LOX instead: pass its model, its training data and its own bins
+    #   import ethnohack.cox_model.lox5_preprocess as lox_prep
+    #   coconut, overlap = coco.prepare_coconut(plant_genera=genera,
+    #                                           prep=lox_prep)
+    #   scored = coco.score_coconut(coconut, api=coco.lox5_api,
+    #                               confidence_edges=coco.CONFIDENCE_EDGES_LOX5)
+
     # optional, slow-ish: PAINS / reactivity / size flags on the candidates
     cand = scored[scored["max_sim_train"] >= 0.49].reset_index(drop=True)
     cand = coco.flag_alerts(cand)
@@ -46,7 +53,8 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import ethnohack.cox_model.cox_model_api as cox
+import ethnohack.cox_model.cox_model_api as cox_api
+import ethnohack.cox_model.lox5_model_api as lox5_api
 import numpy as np
 import pandas as pd
 from ethnohack.constants import COCONUT_CSV, COCONUT_SCORED_CSV, RANDOM_STATE
@@ -62,8 +70,13 @@ RDLogger.DisableLog("rdApp.*")
 # max-Tanimoto-to-training edges for the confidence tiers. These are the bin
 # edges from the reliability table of the scaffold-split run (0.49 / 0.61 /
 # 0.72). Re-derive them if the model is retrained.
-CONFIDENCE_EDGES = (0.49, 0.61, 0.72)
+CONFIDENCE_EDGES = (0.49, 0.61, 0.72)  # COX-2 scaffold-split run
+CONFIDENCE_EDGES_LOX5 = (0.49, 0.61, 0.72)  # 5-LOX: REPLACE with its own bins
 CONFIDENCE_LABELS = ["low", "medium", "good", "high"]
+
+# Which model the scoring functions use when no api= is given. COX-2 stays the
+# default so existing calls behave as before; pass api=lox5_api for 5-LOX.
+DEFAULT_API = cox_api
 
 # a compound this similar to a training molecule is a near-copy, not a prediction
 NEAR_DUPLICATE_SIM = 0.95
@@ -445,8 +458,11 @@ def plant_compound_table(df, cols=None):
 
 
 # the raw training table (smiles + label), read through the preprocessing module
-def load_training_reference(smiles_col="Smiles", label_col="Activity"):
-    import ethnohack.cox_model.cox_preprocess as prep
+def load_training_reference(prep=None, smiles_col="Smiles", label_col="Activity"):
+    # prep: cox_preprocess or lox5_preprocess, so the overlap removal strips
+    # the compounds the RIGHT model was trained on
+    if prep is None:
+        import ethnohack.cox_model.cox_preprocess as prep
 
     raw = prep.load_raw()
     return raw[[smiles_col, label_col]].rename(
@@ -462,10 +478,11 @@ def load_training_reference(smiles_col="Smiles", label_col="Activity"):
 #           useful as an external test if you retrain without them.
 # train_df needs columns "smiles" and "label".
 def split_training_overlap(
-    df, train_df=None, smiles_col="std_smiles", n_jobs=-1, strip_stereo=True
+    df, train_df=None, smiles_col="std_smiles", n_jobs=-1, strip_stereo=True,
+    prep=None,
 ):
     if train_df is None:
-        train_df = load_training_reference()
+        train_df = load_training_reference(prep=prep)
     ref = standardize_df(train_df, n_jobs=n_jobs, strip_stereo=strip_stereo)
     ref_keys = ref.groupby("std_smiles").agg(
         train_label=("label", "mean"), train_n=("label", "size")
@@ -500,6 +517,7 @@ def prepare_coconut(
     strip_stereo=True,
     n_jobs=-1,
     n_max=None,
+    prep=None,
     **load_kwargs,
 ):
     if plants_only and plant_genera is None:
@@ -527,7 +545,7 @@ def prepare_coconut(
         print(f"Plant compounds: {len(df)}")
 
     return split_training_overlap(
-        df, train_df=train_df, n_jobs=n_jobs, strip_stereo=strip_stereo
+        df, train_df=train_df, n_jobs=n_jobs, strip_stereo=strip_stereo, prep=prep
     )
 
 
@@ -539,7 +557,11 @@ def prepare_coconut(
 # score all molecules in chunks (keeps memory flat for large files).
 # Scores the standardised structure when present, so the model sees the same
 # kind of SMILES as the training data went through and duplicates stay merged.
-def score_coconut(df, chunk_size=5000, with_reliability=True, smiles_col=None):
+def score_coconut(df, chunk_size=5000, with_reliability=True, smiles_col=None,
+                  api=None, confidence_edges=None):
+    # api: cox_api or lox5_api. Pass it explicitly for 5-LOX -- otherwise this
+    # silently scores with the COX model and nothing warns you.
+    api = api or DEFAULT_API
     if smiles_col is None:
         smiles_col = "std_smiles" if "std_smiles" in df.columns else "smiles"
 
@@ -548,7 +570,7 @@ def score_coconut(df, chunk_size=5000, with_reliability=True, smiles_col=None):
         chunk = df.iloc[start : start + chunk_size]
 
         # predict: proba, active, and (optionally) max_sim_train, in_domain
-        pred = cox.predict(chunk[smiles_col], with_reliability=with_reliability)
+        pred = api.predict(chunk[smiles_col], with_reliability=with_reliability)
 
         # keep the original row labels so the join below lines up
         pred.index = chunk.index
@@ -556,7 +578,7 @@ def score_coconut(df, chunk_size=5000, with_reliability=True, smiles_col=None):
 
     scored = df.join(pd.concat(parts))
     if with_reliability:
-        scored = add_confidence(scored)
+        scored = add_confidence(scored, edges=confidence_edges or CONFIDENCE_EDGES)
     return scored
 
 
