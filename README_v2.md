@@ -1,6 +1,6 @@
 # EthnoHack: Structure-Based QSAR Models for COX-2 and 5-LOX
 
-**JOIN_CL** is a computational chemistry project that builds structure-based Quantitative Structure-Activity Relationship (QSAR) models to identify natural products with synergistic anti-inflammatory activity. The project targets two key enzymes in the inflammatory cascade: **cyclooxygenase-2 (COX-2)** and **5-lipoxygenase (5-LOX, ALOX5)**. These enzymes represent complementary pathways in the arachidonic acid cascade, and their simultaneous inhibition may provide enhanced anti-inflammatory effects with reduced side effects compared to single-target drugs (Chatzipieris et al., 2026).
+**Ethno_PAIR** is a computational chemistry project that builds structure-based Quantitative Structure-Activity Relationship (QSAR) models to identify natural products with synergistic anti-inflammatory activity. The project targets two key enzymes in the inflammatory cascade: **cyclooxygenase-2 (COX-2)** and **5-lipoxygenase (5-LOX, ALOX5)**. These enzymes represent complementary pathways in the arachidonic acid cascade, and their simultaneous inhibition may provide enhanced anti-inflammatory effects with reduced side effects compared to single-target drugs (Chatzipieris et al., 2026).
 
 ## Biological Context
 
