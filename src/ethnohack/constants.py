@@ -10,9 +10,9 @@ COX2_MODEL_FILE = BASE_DIR / "src" / "ethnohack" / "cox_model" / "cox_model.jobl
 COX2_TRAIN_FILE = BASE_DIR / "src" / "ethnohack" / "cox_model" / "train_smiles_cox.csv"
 
 # lox5
-LOX5_CSV = BASE_DIR / "5lox_model_table.csv"
+LOX5_CSV = BASE_DIR / "datasets_preparation" / "5lox_model_table.csv"
 LOX5_PREPARED_CSV = BASE_DIR / "src" / "ethnohack" / "lox5_model" / "5lox_prepared.csv"
-LOX5_MODEL_FILE = BASE_DIR / "src" / "ethnohack" / "lox5_model" /"5lox_model.joblib"
+LOX5_MODEL_FILE = BASE_DIR / "src" / "ethnohack" / "lox5_model" / "5lox_model.joblib"
 LOX5_TRAIN_FILE = BASE_DIR / "datasets_preparation" / "train_smiles_5lox.csv"
 LOX5_CUTOFF = 0.5
 

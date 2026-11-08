@@ -54,7 +54,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import ethnohack.cox_model.cox_model_api as cox_api
-import ethnohack.cox_model.lox5_model_api as lox5_api
+import ethnohack.lox5_model.lox5_model_api as lox5_api
 import numpy as np
 import pandas as pd
 from ethnohack.constants import COCONUT_CSV, COCONUT_SCORED_CSV, RANDOM_STATE
@@ -478,7 +478,11 @@ def load_training_reference(prep=None, smiles_col="Smiles", label_col="Activity"
 #           useful as an external test if you retrain without them.
 # train_df needs columns "smiles" and "label".
 def split_training_overlap(
-    df, train_df=None, smiles_col="std_smiles", n_jobs=-1, strip_stereo=True,
+    df,
+    train_df=None,
+    smiles_col="std_smiles",
+    n_jobs=-1,
+    strip_stereo=True,
     prep=None,
 ):
     if train_df is None:
@@ -557,8 +561,14 @@ def prepare_coconut(
 # score all molecules in chunks (keeps memory flat for large files).
 # Scores the standardised structure when present, so the model sees the same
 # kind of SMILES as the training data went through and duplicates stay merged.
-def score_coconut(df, chunk_size=5000, with_reliability=True, smiles_col=None,
-                  api=None, confidence_edges=None):
+def score_coconut(
+    df,
+    chunk_size=5000,
+    with_reliability=True,
+    smiles_col=None,
+    api=None,
+    confidence_edges=None,
+):
     # api: cox_api or lox5_api. Pass it explicitly for 5-LOX -- otherwise this
     # silently scores with the COX model and nothing warns you.
     api = api or DEFAULT_API
