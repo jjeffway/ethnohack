@@ -1,95 +1,75 @@
-# ethnohack
-Repository for EthnoHack 2026 Data Hackathon on Ethnopharmacology &amp; Health submission
+# EthnoHack: Structure-Based QSAR Models for COX-2 and 5-LOX
 
-## Gameplan
-1. Choose dataset (active/inactive compounds) for two complementary targets (A and B) that participate in synergistic pathways
-2. Retrieve dataset, filter out unsuitable value
-3. Train tree-ensemble model (Random Forest or XGBoost) on each dataset (including hyperparameter optimization, scaffold split, Optuna?)
-4. Evaluate each model separately (ROC-AUC, balanced accuracy, PR-AUC with active-prevalence baseline?, MCC?, y-scrambling control?)
-5. Run TreeSHAP explainer to identify important chemical features for activity
-6. Score COCONUT/NPASS compounds with the model directly, identify important features and cross-check explanations (max Tanimoto applicability domain?)
-7. Validate by checking a relevant plant with a known synergistic pair matching the targets, also check negative control plants
-8. Run through ADMET filters, Lipinski Rule of Five
-9. Identify plants that have two synergistic compounds (pA(c1) × pB(c2) for c1 ≠ c2 in the same plant)
-10. Flag compounds that score high on both models as dual-target, and report them separately from pairs
-11. If lacking viable results, also check inter-plant compound pairs
-12. Validate by checking biological pathway and other features
-13. Output a complementary-mechanism hypothesis, identify novel synergistic pairs of natural compounds found in the same plant
+**JOIN_CL** is a computational chemistry project that builds structure-based Quantitative Structure-Activity Relationship (QSAR) models to identify natural products with synergistic anti-inflammatory activity. The project targets two key enzymes in the inflammatory cascade: **cyclooxygenase-2 (COX-2)** and **5-lipoxygenase (5-LOX, ALOX5)**. These enzymes represent complementary pathways in the arachidonic acid cascade, and their simultaneous inhibition may provide enhanced anti-inflammatory effects with reduced side effects compared to single-target drugs.
 
+## Biological Context
 
-## Potential Targets
-- COX-2 + 5-LOX (inflammation)
-- COX-2 + AChE (neuroinflammation)
+### Inflammatory Pathways
 
-Check which pathways they are present in -> KEGG
-Structural similarity and biological functions
+Inflammation is a complex biological response involving multiple pathways. Two critical enzymes in the arachidonic acid metabolism pathway are:
 
-COX-2 chEMBL: https://www.ebi.ac.uk/chembl/explore/target/CHEMBL230
+- **COX-2 (Cyclooxygenase-2, CHEMBL230)**: Converts arachidonic acid to prostaglandins, which mediate pain, fever, and inflammation. COX-2 is inducible and expressed at sites of inflammation. Non-selective COX inhibitors (like traditional NSAIDs) cause gastrointestinal side effects, while selective COX-2 inhibitors may increase cardiovascular risk.
 
-https://pubmed.ncbi.nlm.nih.gov/40346930/ 
+- **5-LOX (5-Lipoxygenase, ALOX5, CHEMBL215)**: Converts arachidonic acid to leukotrienes, which are potent inflammatory mediators involved in asthma, allergic reactions, and chronic inflammation. 5-LOX inhibition can reduce leukocyte recruitment and vascular permeability.
 
-UPDATE PYPROJECT.TOML
+### Synergistic Inhibition Hypothesis
 
+The **synergistic inhibition hypothesis** posits that compounds targeting both COX-2 and 5-LOX simultaneously may provide:
+- **Enhanced efficacy**: Blocking both prostaglandin and leukotriene production
+- **Reduced side effects**: Lower doses of each inhibitor may be effective
+- **Broader spectrum**: Addressing multiple inflammatory mediators
+- **Natural product inspiration**: Many traditional medicinal plants contain compounds that modulate both pathways
 
-## Christian's Hints
-- Find plants that have natural compounds that can be used as a drug, or known drugs that have other applications
-- chebi -> chemicals of biolohical interest
-- opentargets -> in clinical trial or approved by FDA
-- taxtree -> NCBI taxonomy tree
-- icd11 -> categorize diseases
-- ipni -> classify plants (more specialized than NCBI)
-- wcvp -> location of plants
-- wfo -> for uncommon nicknames of plants
-- obo -> open biomedical ontologies
+This approach is particularly relevant for **ethnopharmacology** — the study of traditional medicine systems, where plant extracts often contain multiple bioactive compounds that work synergistically.
+
+## Pipeline Overview
+
+The pipeline consists of four main stages:
+
+1. **Data Download**: Download raw ChEMBL bioactivity data using `download_chembl.py`
+2. **Data Processing**: Clean, binarize, compute features, and prune using `data_pipeline.py`
+3. **Model Training**: Train Random Forest classifiers with scaffold-based splitting using `cox_train.py` and `lox5_train.py`
+4. **Scoring**: Score COCONUT natural products using `score_both.py`
 
 
-***
+## Computational Approach
+
+### Structure-Based QSAR Modeling
+
+This project employs **structure-based QSAR** modeling, which predicts biological activity based solely on molecular structure without requiring experimental physicochemical properties (logP, pKa, solubility). The models use:
+
+- **Molecular descriptors**: 2D physicochemical properties computed from SMILES strings using RDKit
+- **Binary classification**: Active (1) vs inactive (0) based on pChEMBL threshold
+- **Tree ensemble methods**: Random Forest classifiers with hyperparameter optimization
+- **Scaffold-based validation**: Rigorous evaluation using Murcko scaffold-based splits to prevent analogue bias
+
+## Setup
+
+### Prerequisites
+
+- Python >= 3.13
+- Dependencies listed in `pyproject.toml`
+
+### Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/jjeffway/ethnohack.git
+cd ethnohack
+
+# Create virtual environment (using uv)
+uv sync
+
+# Or using pip
+pip install -e .
+```
+
+### Authors and acknowledgment
+Chiara Marie Dassow - model training <br>
+Jenna Jeffway - explainable AI <br>
+Daria Kochenko - data fetching <br>
 
 
-# Editing this README
-
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
-
-## Suggestions for a good README
-
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
-
-## Name
-Choose a self-explaining name for your project.
-
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
-
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
-
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
-
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
-
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
-
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
 
 ## License
 For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
